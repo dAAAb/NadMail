@@ -84,7 +84,7 @@ export async function createToken(
   // Token name max 32 chars: 0x users get short prefix, .nad users get full handle
   const shortHandle = isWalletHandle ? handle.slice(0, 10) : handle;
   const tokenName = `${shortHandle}@${env.DOMAIN}`;
-  const tokenSymbol = shortHandle.slice(0, 10).toUpperCase();
+  const tokenSymbol = isWalletHandle ? shortHandle.slice(0, 10).toUpperCase() : handle.toUpperCase();
   const description = isWalletHandle
     ? `NadMail token for ${shortHandle}...@${env.DOMAIN}. Every email to this user is a micro-investment.`
     : `NadMail token for ${handle}@${env.DOMAIN}. Every email to this user is a micro-investment.`;
