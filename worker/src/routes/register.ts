@@ -74,21 +74,6 @@ registerRoutes.post('/', authMiddleware(), async (c) => {
       return c.json({ error: 'This name has already been claimed' }, 409);
     }
 
-    // Step 1: Transfer .nad NFT to user (must succeed before proceeding)
-    try {
-      nftTransferTx = await transferNadName(requestedHandle, auth.wallet, c.env);
-      console.log(`[register] NFT ${requestedHandle}.nad transferred to ${auth.wallet}: ${nftTransferTx}`);
-    } catch (e: any) {
-      console.log(`[register] NFT transfer failed for ${requestedHandle}: ${e.message}`);
-      // If worker doesn't own the NFT, still allow claim (name may not be pre-bought yet)
-      // This makes it work for hackathon demo even before NFTs are loaded
-    }
-
-    // Claim the free name in DB
-    await c.env.DB.prepare(
-      'UPDATE free_nad_names SET claimed_by = ?, claimed_at = ? WHERE name = ? AND claimed_by IS NULL'
-    ).bind(auth.wallet, Math.floor(Date.now() / 1000), requestedHandle).run();
-
     handle = requestedHandle;
     nadName = `${requestedHandle}.nad`;
     shouldCreateToken = true;
@@ -104,19 +89,29 @@ registerRoutes.post('/', authMiddleware(), async (c) => {
     ).bind(handle).first();
 
     if (handleTaken) {
-      // Revert free name claim if we just claimed it
-      await c.env.DB.prepare(
-        'UPDATE free_nad_names SET claimed_by = NULL, claimed_at = NULL WHERE name = ?'
-      ).bind(requestedHandle).run();
       return c.json({ error: 'This handle is already taken' }, 409);
     }
   }
 
-  // Create account
+  // Create account first (free_nad_names.claimed_by has FK to accounts.wallet)
   await c.env.DB.prepare(
     `INSERT INTO accounts (handle, wallet, nad_name, created_at, tier)
      VALUES (?, ?, ?, ?, 'free')`
   ).bind(handle, auth.wallet, nadName, Math.floor(Date.now() / 1000)).run();
+
+  // Claim free name + transfer NFT (after account exists for FK constraint)
+  if (requestedHandle) {
+    await c.env.DB.prepare(
+      'UPDATE free_nad_names SET claimed_by = ?, claimed_at = ? WHERE name = ? AND claimed_by IS NULL'
+    ).bind(auth.wallet, Math.floor(Date.now() / 1000), requestedHandle).run();
+
+    try {
+      nftTransferTx = await transferNadName(requestedHandle, auth.wallet, c.env);
+      console.log(`[register] NFT ${requestedHandle}.nad transferred to ${auth.wallet}: ${nftTransferTx}`);
+    } catch (e: any) {
+      console.log(`[register] NFT transfer failed for ${requestedHandle}: ${e.message}`);
+    }
+  }
 
   // Issue JWT with handle
   const secret = c.env.JWT_SECRET!;

@@ -1,9 +1,12 @@
 /**
  * NNS .nad NFT 轉移模組
  * 將 Worker 錢包持有的 .nad NFT 轉給用戶
+ *
+ * NNS uses sequential integer tokenIds (NOT namehash).
+ * tokenId mapping is stored in the free_nad_names table.
  */
 
-import { createPublicClient, createWalletClient, http, namehash, type Hex } from 'viem';
+import { createPublicClient, createWalletClient, http, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { Env } from './types';
 
@@ -28,18 +31,11 @@ const erc721Abi = [
     stateMutability: 'nonpayable' as const,
     type: 'function' as const,
   },
-  {
-    inputs: [{ name: 'tokenId', type: 'uint256' }],
-    name: 'ownerOf',
-    outputs: [{ name: '', type: 'address' }],
-    stateMutability: 'view' as const,
-    type: 'function' as const,
-  },
 ] as const;
 
 /**
  * Transfer a .nad NFT from the worker wallet to a user.
- * tokenId = uint256(namehash("name.nad"))
+ * Looks up the sequential tokenId from the free_nad_names table.
  */
 export async function transferNadName(
   nadName: string,  // e.g. "euler" (without .nad)
@@ -48,12 +44,17 @@ export async function transferNadName(
 ): Promise<string> {
   if (!env.WALLET_PRIVATE_KEY) throw new Error('Worker wallet not configured');
 
-  const account = privateKeyToAccount(env.WALLET_PRIVATE_KEY as Hex);
+  // Look up tokenId from DB
+  const row = await env.DB.prepare(
+    'SELECT token_id FROM free_nad_names WHERE name = ?'
+  ).bind(nadName).first<{ token_id: number | null }>();
 
-  const publicClient = createPublicClient({
-    chain: monad,
-    transport: http(env.MONAD_RPC_URL),
-  });
+  if (!row || row.token_id === null) {
+    throw new Error(`No tokenId found for ${nadName}.nad — check free_nad_names table`);
+  }
+
+  const tokenId = BigInt(row.token_id);
+  const account = privateKeyToAccount(env.WALLET_PRIVATE_KEY as Hex);
 
   const walletClient = createWalletClient({
     account,
@@ -61,29 +62,18 @@ export async function transferNadName(
     transport: http(env.MONAD_RPC_URL),
   });
 
-  // Compute tokenId from namehash
-  const fullName = `${nadName}.nad`;
-  const node = namehash(fullName);
-  const tokenId = BigInt(node);
-
-  // Verify worker owns the NFT
-  const owner = await publicClient.readContract({
-    address: NNS_CONTRACT,
-    abi: erc721Abi,
-    functionName: 'ownerOf',
-    args: [tokenId],
+  const publicClient = createPublicClient({
+    chain: monad,
+    transport: http(env.MONAD_RPC_URL),
   });
 
-  if (owner.toLowerCase() !== account.address.toLowerCase()) {
-    throw new Error(`Worker does not own ${fullName} (owner: ${owner})`);
-  }
-
-  // Transfer NFT
+  // Transfer NFT (skip simulation — NNS eth_call doesn't handle msg.sender correctly)
   const hash = await walletClient.writeContract({
     address: NNS_CONTRACT,
     abi: erc721Abi,
     functionName: 'transferFrom',
     args: [account.address, toAddress as `0x${string}`, tokenId],
+    gas: 100_000n,
   });
 
   // Wait for confirmation

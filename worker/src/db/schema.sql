@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS daily_email_counts (
 CREATE TABLE IF NOT EXISTS free_nad_names (
     name        TEXT PRIMARY KEY,
     description TEXT,
+    token_id    INTEGER,
     claimed_by  TEXT,
     claimed_at  INTEGER,
     FOREIGN KEY (claimed_by) REFERENCES accounts(wallet)

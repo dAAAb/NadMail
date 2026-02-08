@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { Env } from '../types';
 import { generateNonce, verifySiwe, createToken, buildSiweMessage } from '../auth';
 import { createToken as createNadFunToken, distributeInitialTokens } from '../nadfun';
+import { transferNadName } from '../nns-transfer';
 
 const SIWE_ERROR_MESSAGES: Record<string, string> = {
   no_nonce_in_message: 'SIWE message is malformed — no nonce found. Use the exact message returned by POST /api/auth/start.',
@@ -83,28 +84,60 @@ authRoutes.post('/agent-register', async (c) => {
 
   // Not registered — auto-register
   let handle: string;
+  let nadName: string | null = null;
+  let nftTransferTx: string | null = null;
 
   if (requestedHandle) {
-    handle = requestedHandle.toLowerCase();
+    handle = requestedHandle.toLowerCase().trim();
     if (!isValidHandle(handle)) {
       return c.json({ error: 'Invalid handle format (3-20 chars, a-z, 0-9, _ only)' }, 400);
     }
-    const handleTaken = await c.env.DB.prepare(
-      'SELECT handle FROM accounts WHERE handle = ?'
-    ).bind(handle).first();
-    if (handleTaken) {
-      return c.json({ error: 'This handle is already taken' }, 409);
+
+    // Must be a free .nad name
+    const freeName = await c.env.DB.prepare(
+      'SELECT name, claimed_by FROM free_nad_names WHERE name = ?'
+    ).bind(handle).first<{ name: string; claimed_by: string | null }>();
+
+    if (!freeName) {
+      return c.json({ error: 'This name is not available for claiming' }, 400);
     }
+    if (freeName.claimed_by !== null) {
+      return c.json({ error: 'This name has already been claimed' }, 409);
+    }
+
+    nadName = `${handle}.nad`;
   } else {
     // Progressive 0x handle: try 0x+8hex, then 0x+10hex, 0x+12hex...
     handle = await resolveUniqueWalletHandle(wallet, c.env.DB);
   }
 
-  // Create account
+  // Check handle uniqueness in accounts
+  const handleTaken = await c.env.DB.prepare(
+    'SELECT handle FROM accounts WHERE handle = ?'
+  ).bind(handle).first();
+  if (handleTaken) {
+    return c.json({ error: 'This handle is already taken' }, 409);
+  }
+
+  // Create account first (free_nad_names.claimed_by has FK to accounts.wallet)
   await c.env.DB.prepare(
-    `INSERT INTO accounts (handle, wallet, created_at, tier)
-     VALUES (?, ?, ?, 'free')`
-  ).bind(handle, wallet, Math.floor(Date.now() / 1000)).run();
+    `INSERT INTO accounts (handle, wallet, nad_name, created_at, tier)
+     VALUES (?, ?, ?, ?, 'free')`
+  ).bind(handle, wallet, nadName, Math.floor(Date.now() / 1000)).run();
+
+  // Claim free name + transfer NFT (after account exists for FK constraint)
+  if (requestedHandle) {
+    await c.env.DB.prepare(
+      'UPDATE free_nad_names SET claimed_by = ?, claimed_at = ? WHERE name = ? AND claimed_by IS NULL'
+    ).bind(wallet, Math.floor(Date.now() / 1000), handle).run();
+
+    try {
+      nftTransferTx = await transferNadName(handle, wallet, c.env);
+      console.log(`[agent-register] NFT ${handle}.nad transferred to ${wallet}: ${nftTransferTx}`);
+    } catch (e: any) {
+      console.log(`[agent-register] NFT transfer failed for ${handle}: ${e.message}`);
+    }
+  }
 
   // Migrate pre-stored emails
   let migratedCount = 0;
@@ -150,6 +183,8 @@ authRoutes.post('/agent-register', async (c) => {
     email: `${handle}@${c.env.DOMAIN}`,
     handle,
     wallet,
+    nad_name: nadName,
+    nft_transfer_tx: nftTransferTx,
     token_address: tokenAddress,
     token_symbol: tokenSymbol,
     tier: 'free',
