@@ -1,17 +1,16 @@
-name: basemail
-version: 0.2.0
+name: nadmail
+version: 1.0.0
 description: |
-  Email identity service for AI Agents on Base chain.
-  Register a @basemail.ai email tied to your Basename or wallet address,
-  send and receive emails — no CAPTCHAs, wallet is identity.
-  Supports automatic Basename purchase for agents without one.
+  Your Email is Your Meme Coin — Email identity for AI Agents on Monad.
+  Register a @nadmail.ai email tied to your wallet, auto-create a meme coin on nad.fun.
+  Every email sent triggers a micro-investment in the recipient's token.
 
-author: basemail-team
-homepage: https://basemail.ai
-api_docs: https://api.basemail.ai/api/docs
+author: NadMail
+homepage: https://nadmail.ai
+api_docs: https://api.nadmail.ai/api/docs
 
-chain: base
-chain_id: 8453
+chain: monad
+chain_id: 143
 
 # ══════════════════════════════════════════════
 # QUICK START: 2 API calls to register, 1 to send
@@ -24,75 +23,40 @@ chain_id: 8453
 #
 # Step 3: POST /api/auth/agent-register {
 #           address, signature, message,
-#           basename: "yourname.base.eth"  ← optional, for Basename owners
+#           handle: "yourname"  ← optional, pick a .nad name
 #         }
-#         → { token, email, handle }
+#         → { token, email, handle, token_address, token_symbol }
 #
 # Step 4: POST /api/send { to, subject, body }
-#         → { success, email_id }
+#         → { success, email_id, microbuy: { tx, tokens_received } }
 #
-# That's it! Internal @basemail.ai emails are FREE.
+# That's it! Internal @nadmail.ai emails are FREE + trigger micro-buys.
 # ══════════════════════════════════════════════
 
 commands:
   register:
     description: |
-      Register a @basemail.ai email address tied to your Base wallet.
-      If you own a Basename, pass it to get a short handle (e.g. alice@basemail.ai).
-      If you don't have a Basename, you get 0x...@basemail.ai — and can upgrade later.
+      Register a @nadmail.ai email address tied to your Monad wallet.
+      Optionally pick a .nad name handle (e.g. alice@nadmail.ai).
+      A meme coin ($HANDLE) is auto-created on nad.fun.
     params:
-      basename:
+      handle:
         type: string
         required: false
         description: |
-          Your existing Basename (e.g. 'alice.base.eth').
-          Ownership is verified on-chain via ownerOf().
-          If not provided, reverse resolution is attempted.
-          If that fails, you get 0x address as handle.
+          Desired handle (e.g. 'alice'). Creates alice@nadmail.ai + $ALICE token.
+          If not provided, defaults to abbreviated wallet address.
     returns:
-      email: "Registered email address (e.g. alice@basemail.ai)"
+      email: "Registered email address (e.g. alice@nadmail.ai)"
       handle: "Email handle"
       token: "JWT token for subsequent API calls (24hr expiry)"
-      upgrade_hint: "Instructions to upgrade to Basename handle (if registered with 0x)"
-
-  upgrade:
-    description: |
-      Upgrade from 0x...@basemail.ai to a Basename handle.
-      Two options: claim an existing Basename you own, or buy a new one (we pay gas).
-    params:
-      basename:
-        type: string
-        required: false
-        description: "Your existing Basename to claim (e.g. 'alice.base.eth')"
-      auto_basename:
-        type: boolean
-        required: false
-        description: "Set to true to buy a new Basename on-chain (we pay gas + fees)"
-      basename_name:
-        type: string
-        required: false
-        description: "Desired name to purchase (required if auto_basename is true). 3-32 chars, a-z, 0-9, - only."
-    returns:
-      email: "New email address"
-      handle: "New handle"
-      old_handle: "Previous 0x handle"
-      basename: "Basename (e.g. alice.base.eth)"
-      token: "New JWT token"
-
-  check_price:
-    description: Check Basename availability and registration price before purchasing
-    params:
-      name:
-        type: string
-        required: true
-        description: "Desired Basename (without .base.eth suffix). e.g. 'alice'"
-    returns:
-      available: "Whether the name is available"
-      price_wei: "Registration price in wei"
-      price_eth: "Registration price in ETH"
+      token_address: "Meme coin contract address on nad.fun"
+      token_symbol: "Token symbol (e.g. $ALICE)"
 
   send:
-    description: Send an email from your @basemail.ai address
+    description: |
+      Send an email from your @nadmail.ai address.
+      Internal emails trigger a 0.001 MON micro-buy of the recipient's token.
     params:
       to:
         type: string
@@ -106,13 +70,10 @@ commands:
         type: string
         required: true
         description: "Email body (plain text)"
-      html:
-        type: string
-        required: false
-        description: "Email body (HTML, optional)"
     returns:
       success: "Whether the email was sent successfully"
       email_id: "ID of the sent email"
+      microbuy: "Token micro-buy transaction details (internal emails only)"
 
   inbox:
     description: Check your inbox for received emails
@@ -133,34 +94,23 @@ commands:
       total: "Total email count"
       unread: "Unread email count"
 
-  read:
-    description: Read a specific email by ID
-    params:
-      id:
-        type: string
-        required: true
-        description: "Email ID"
-    returns:
-      email: "Full email object with body content"
-
   identity:
-    description: Look up a BaseMail user by handle or wallet address (public, no auth)
+    description: Look up a NadMail user by handle (public, no auth)
     params:
       query:
         type: string
         required: true
-        description: "Handle name or wallet address to look up"
+        description: "Handle name to look up"
     returns:
       handle: "Email handle"
       email: "Full email address"
       wallet: "Wallet address"
-      basename: "Associated Basename"
+      token_address: "Meme coin address on nad.fun"
+      token_symbol: "Token symbol"
+      token_price_mon: "Current token price in MON"
 
-# ══════════════════════════════════════════════
-# API Configuration
-# ══════════════════════════════════════════════
 api:
-  base_url: https://api.basemail.ai
+  base_url: https://api.nadmail.ai
   auth_type: siwe
   auth_flow:
     - step: start
@@ -181,54 +131,18 @@ api:
     - step: agent-register
       method: POST
       endpoint: /api/auth/agent-register
-      body: '{ "address": "...", "signature": "0x...", "message": "...", "basename": "optional.base.eth" }'
+      body: '{ "address": "...", "signature": "0x...", "message": "...", "handle": "optional_name" }'
       description: |
-        Verify signature + auto-register in one call.
-        Pass optional "basename" to register with your Basename handle.
+        Verify signature + auto-register + create meme coin in one call.
+        Pass optional "handle" to pick your email name.
         If already registered, returns existing account + new token.
-      response: '{ token, email, handle, wallet, registered, new_account, upgrade_hint? }'
+      response: '{ token, email, handle, wallet, token_address, token_symbol }'
 
-  # Endpoint reference
   endpoints:
-    register: POST /api/register
-    upgrade: PUT /api/register/upgrade
-    check_price: GET /api/register/price/:name
-    check_address: GET /api/register/check/:address
+    register: POST /api/auth/agent-register
     send: POST /api/send
     inbox: GET /api/inbox
     read: GET /api/inbox/:id
-    identity: GET /api/identity/:query
+    identity: GET /api/identity/:handle
     credits: GET /api/credits
     buy_credits: POST /api/credits/buy
-
-# ══════════════════════════════════════════════
-# Example: Complete Agent Flow (1-2-3 Registration)
-# ══════════════════════════════════════════════
-#
-# --- Scenario A: Agent already has a Basename ---
-#
-#   1. POST /api/auth/start { address: "0xABC" }
-#   2. Sign message → signature
-#   3. POST /api/auth/agent-register {
-#        address: "0xABC", signature, message,
-#        basename: "myagent.base.eth"
-#      }
-#   → Done! Email: myagent@basemail.ai
-#
-# --- Scenario B: Agent has NO Basename ---
-#
-#   1. POST /api/auth/start { address: "0xABC" }
-#   2. Sign → POST /api/auth/agent-register { address, signature, message }
-#      → Registered as 0xABC@basemail.ai (with upgrade_hint)
-#   3. GET /api/register/price/myagent → check price
-#   4. PUT /api/register/upgrade {
-#        auto_basename: true,
-#        basename_name: "myagent"
-#      }
-#   → Upgraded! Email: myagent@basemail.ai
-#
-# --- Scenario C: Just send email, no Basename needed ---
-#
-#   1. POST /api/auth/start → sign → POST /api/auth/agent-register
-#   2. POST /api/send { to, subject, body }
-#   → Done! Sent from 0xABC@basemail.ai

@@ -1,5 +1,5 @@
 {
-  "name": "basemail-worker",
+  "name": "nadmail-worker",
   "version": "0.1.0",
   "private": true,
   "scripts": {

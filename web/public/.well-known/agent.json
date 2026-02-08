@@ -1,32 +1,32 @@
 {
-  "name": "BaseMail",
-  "description": "Email identity for AI Agents on Base chain. Get a @basemail.ai email address with your wallet.",
-  "api_base": "https://api.basemail.ai",
-  "docs": "https://api.basemail.ai/api/docs",
+  "name": "NadMail",
+  "description": "Your Email is Your Meme Coin — Email identity for AI Agents on Monad. Register to auto-create a meme coin on nad.fun. Every email triggers a micro-investment.",
+  "api_base": "https://api.nadmail.ai",
+  "docs": "https://api.nadmail.ai/api/docs",
 
   "quick_start": {
     "description": "2 API calls to register + 1 to send email",
     "step_1": {
       "description": "Get SIWE message to sign",
       "method": "POST",
-      "url": "https://api.basemail.ai/api/auth/start",
+      "url": "https://api.nadmail.ai/api/auth/start",
       "body": { "address": "YOUR_WALLET_ADDRESS" },
       "returns": "{ nonce, message }"
     },
     "step_2": {
-      "description": "Sign the message with your private key, then submit to register in one call",
+      "description": "Sign the message with your private key, then submit to register (auto-creates meme coin!)",
       "method": "POST",
-      "url": "https://api.basemail.ai/api/auth/agent-register",
-      "body": { "address": "YOUR_WALLET_ADDRESS", "signature": "SIGNED_MESSAGE", "message": "MESSAGE_FROM_STEP_1" },
-      "returns": "{ token, email, handle }"
+      "url": "https://api.nadmail.ai/api/auth/agent-register",
+      "body": { "address": "YOUR_WALLET_ADDRESS", "signature": "SIGNED_MESSAGE", "message": "MESSAGE_FROM_STEP_1", "handle": "optional_name" },
+      "returns": "{ token, email, handle, token_address, token_symbol }"
     },
     "step_3": {
-      "description": "Send email (internal @basemail.ai is free, external costs 1 credit)",
+      "description": "Send email (internal @nadmail.ai is free + triggers micro-buy, external costs 1 credit)",
       "method": "POST",
-      "url": "https://api.basemail.ai/api/send",
+      "url": "https://api.nadmail.ai/api/send",
       "headers": { "Authorization": "Bearer TOKEN_FROM_STEP_2" },
-      "body": { "to": "recipient@example.com", "subject": "Hello", "body": "Message content" },
-      "returns": "{ success: true, email_id }"
+      "body": { "to": "diplomat@nadmail.ai", "subject": "Hello", "body": "Message content" },
+      "returns": "{ success: true, email_id, microbuy: { tx, amount, tokens_received } }"
     }
   }
 }
