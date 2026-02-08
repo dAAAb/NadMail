@@ -41,3 +41,12 @@ CREATE TABLE IF NOT EXISTS daily_email_counts (
     count   INTEGER DEFAULT 0,
     PRIMARY KEY (handle, date)
 );
+
+-- 免費 .nad 名稱贈送池
+CREATE TABLE IF NOT EXISTS free_nad_names (
+    name        TEXT PRIMARY KEY,
+    description TEXT,
+    claimed_by  TEXT,
+    claimed_at  INTEGER,
+    FOREIGN KEY (claimed_by) REFERENCES accounts(wallet)
+);

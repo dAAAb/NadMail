@@ -16,5 +16,8 @@
     "deploy:web": "npm run deploy --workspace=web",
     "db:migrate": "npm run db:migrate --workspace=worker",
     "test:contracts": "npm test --workspace=contracts"
+  },
+  "dependencies": {
+    "@nadnameservice/nns-viem-sdk": "^2.0.0"
   }
 }

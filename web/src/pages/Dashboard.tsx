@@ -448,7 +448,13 @@ function ConnectWallet({ onAuth }: { onAuth: (auth: AuthState) => void }) {
   );
 }
 
-// ─── Register Email ─────────────────────────────────────
+// ─── Register Email (Name Picker) ───────────────────────
+interface FreeName {
+  name: string;
+  description: string;
+  available: boolean;
+}
+
 function RegisterEmail({
   auth,
   onRegistered,
@@ -461,15 +467,30 @@ function RegisterEmail({
   const [claimed, setClaimed] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
   const [claimedHandle, setClaimedHandle] = useState('');
+  const [claimedHasToken, setClaimedHasToken] = useState(false);
 
-  const [handleInput, setHandleInput] = useState('');
+  const [freeNames, setFreeNames] = useState<FreeName[]>([]);
+  const [loadingNames, setLoadingNames] = useState(true);
+  const [selectedName, setSelectedName] = useState<string | null>(null);
+
   const shortAddr = auth.wallet ? `${auth.wallet.slice(0, 6)}...${auth.wallet.slice(-4)}` : '';
 
-  async function handleRegister() {
+  // Load free names on mount
+  useEffect(() => {
+    fetch(`${API_BASE}/api/register/free-names`)
+      .then((r) => r.json())
+      .then((data) => {
+        setFreeNames(data.names || []);
+      })
+      .catch(() => setFreeNames([]))
+      .finally(() => setLoadingNames(false));
+  }, []);
+
+  async function handleRegister(handle?: string) {
     setSubmitting(true);
     setError('');
     try {
-      const body = handleInput.trim() ? { handle: handleInput.trim().toLowerCase() } : {};
+      const body = handle ? { handle } : {};
       const res = await apiFetch('/api/register', auth.token, {
         method: 'POST',
         body: JSON.stringify(body),
@@ -477,6 +498,7 @@ function RegisterEmail({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Registration failed');
       setClaimedHandle(data.handle);
+      setClaimedHasToken(!!data.token_address || !!handle);
       setClaimed(true);
       setShowConfetti(true);
       setTimeout(() => setShowConfetti(false), 4000);
@@ -487,12 +509,12 @@ function RegisterEmail({
     }
   }
 
-  // Success screen after claim
+  // Success screen
   if (claimed) {
     const claimedEmail = `${claimedHandle}@nadmail.ai`;
 
     return (
-      <div className="min-h-screen bg-nad-dark flex items-center justify-center">
+      <div className="min-h-screen bg-nad-dark flex items-center justify-center p-4">
         {showConfetti && <ConfettiEffect />}
 
         <div className="bg-nad-gray rounded-xl p-8 max-w-md w-full border border-gray-800 text-center">
@@ -501,9 +523,15 @@ function RegisterEmail({
             {claimedEmail}
           </h1>
           <p className="text-green-400 font-medium text-lg mb-2">is yours!</p>
-          <p className="text-purple-400 text-sm mb-6 font-mono">
-            ${claimedHandle.toUpperCase()} token created on nad.fun
-          </p>
+          {claimedHasToken ? (
+            <p className="text-purple-400 text-sm mb-6 font-mono">
+              ${claimedHandle.toUpperCase()} token created on nad.fun
+            </p>
+          ) : (
+            <p className="text-gray-500 text-sm mb-6">
+              Basic email — no token (pick a .nad name next time!)
+            </p>
+          )}
 
           <button
             onClick={() => onRegistered(claimedHandle, auth.token)}
@@ -516,53 +544,139 @@ function RegisterEmail({
     );
   }
 
-  // Claim screen
-  return (
-    <div className="min-h-screen bg-nad-dark flex items-center justify-center">
-      <div className="bg-nad-gray rounded-xl p-8 max-w-md w-full border border-gray-800">
-        <h1 className="text-2xl font-bold mb-2">Claim Your Email + Meme Coin</h1>
-        <p className="text-gray-400 mb-6">
-          Pick a handle to get a @nadmail.ai email and auto-create your token on nad.fun.
-        </p>
+  const availableNames = freeNames.filter((n) => n.available);
+  const hasAvailable = availableNames.length > 0;
 
-        <div className="bg-nad-dark rounded-lg p-4 mb-4 border border-gray-700">
-          <div className="text-gray-500 text-xs mb-2">Your Handle</div>
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={handleInput}
-              onChange={(e) => setHandleInput(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-              placeholder={auth.wallet.slice(0, 10).toLowerCase()}
-              className="flex-1 bg-transparent text-xl font-mono text-nad-purple font-bold focus:outline-none"
-              maxLength={20}
-            />
-            <span className="text-gray-500 font-mono">@nadmail.ai</span>
-          </div>
-          <div className="text-gray-500 text-xs mt-2">
-            Wallet: <span className="text-gray-300">{shortAddr}</span>
-          </div>
-          {handleInput && (
-            <div className="text-purple-400 text-xs mt-1 font-mono">
-              Token: ${handleInput.toUpperCase()} on nad.fun
-            </div>
-          )}
+  // Name picker screen
+  return (
+    <div className="min-h-screen bg-nad-dark flex items-center justify-center p-4">
+      <div className="bg-nad-gray rounded-xl p-6 sm:p-8 max-w-2xl w-full border border-gray-800">
+        <div className="text-center mb-6">
+          <h1 className="text-2xl font-bold mb-2">Pick Your .nad Name</h1>
+          <p className="text-gray-400">
+            {hasAvailable
+              ? `Choose a legendary name — free! (${availableNames.length} left)`
+              : 'All free names have been claimed.'}
+          </p>
+          <p className="text-gray-600 text-xs mt-1">
+            Wallet: <span className="text-gray-400">{shortAddr}</span>
+          </p>
         </div>
 
-        {auth.pending_emails && auth.pending_emails > 0 ? (
-          <div className="bg-purple-900/20 border border-purple-800 text-purple-300 text-sm rounded-lg p-3 mb-4">
-            You have <span className="font-bold">{auth.pending_emails}</span> email{auth.pending_emails > 1 ? 's' : ''} waiting!
-          </div>
-        ) : null}
+        {loadingNames ? (
+          <div className="text-center py-8 text-gray-500">Loading names...</div>
+        ) : hasAvailable ? (
+          <>
+            {/* Name grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
+              {freeNames.map((n) => {
+                const isSelected = selectedName === n.name;
+                const isAvailable = n.available;
 
-        {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+                return (
+                  <button
+                    key={n.name}
+                    onClick={() => isAvailable && setSelectedName(n.name)}
+                    disabled={!isAvailable}
+                    className={`rounded-lg p-3 text-left transition border ${
+                      isSelected
+                        ? 'border-nad-purple bg-purple-900/30 ring-2 ring-nad-purple'
+                        : isAvailable
+                        ? 'border-gray-700 bg-nad-dark hover:border-purple-600 hover:bg-purple-900/10 cursor-pointer'
+                        : 'border-gray-800 bg-gray-900/50 opacity-50 cursor-not-allowed'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className={`font-mono font-bold text-sm ${
+                        isAvailable ? 'text-nad-purple' : 'text-gray-600 line-through'
+                      }`}>
+                        {n.name}.nad
+                      </span>
+                      {isAvailable ? (
+                        <span className="text-green-500 text-xs">Free</span>
+                      ) : (
+                        <span className="text-gray-600 text-xs">Claimed</span>
+                      )}
+                    </div>
+                    <div className={`text-xs ${isAvailable ? 'text-gray-500' : 'text-gray-700'}`}>
+                      {n.description.split(' — ')[0]}
+                    </div>
+                    <div className={`text-[10px] mt-1 ${isAvailable ? 'text-gray-600' : 'text-gray-700'}`}>
+                      {n.description.split(' — ')[1] || ''}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
 
-        <button
-          onClick={handleRegister}
-          disabled={submitting}
-          className="w-full bg-nad-purple text-white py-3 rounded-lg font-medium hover:bg-purple-600 transition disabled:opacity-50 text-lg"
-        >
-          {submitting ? 'Creating...' : 'Claim Email + Create Token'}
-        </button>
+            {/* Selected preview */}
+            {selectedName && (
+              <div className="bg-nad-dark rounded-lg p-4 mb-4 border border-purple-800">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-nad-purple font-mono font-bold text-lg">
+                      {selectedName}@nadmail.ai
+                    </div>
+                    <div className="text-purple-400 text-xs font-mono mt-1">
+                      Token: ${selectedName.toUpperCase()} on nad.fun
+                    </div>
+                  </div>
+                  <div className="text-3xl">&#9993;</div>
+                </div>
+              </div>
+            )}
+
+            {auth.pending_emails && auth.pending_emails > 0 ? (
+              <div className="bg-purple-900/20 border border-purple-800 text-purple-300 text-sm rounded-lg p-3 mb-4">
+                You have <span className="font-bold">{auth.pending_emails}</span> email{auth.pending_emails > 1 ? 's' : ''} waiting!
+              </div>
+            ) : null}
+
+            {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+
+            {/* Claim button */}
+            <button
+              onClick={() => handleRegister(selectedName!)}
+              disabled={submitting || !selectedName}
+              className="w-full bg-nad-purple text-white py-3 rounded-lg font-medium hover:bg-purple-600 transition disabled:opacity-50 text-lg mb-3"
+            >
+              {submitting
+                ? 'Creating token...'
+                : selectedName
+                ? `Claim ${selectedName}@nadmail.ai + $${selectedName.toUpperCase()}`
+                : 'Select a name above'}
+            </button>
+
+            {/* Skip option */}
+            <button
+              onClick={() => handleRegister()}
+              disabled={submitting}
+              className="w-full text-gray-500 hover:text-gray-300 text-sm py-2 transition"
+            >
+              Skip — use wallet address instead (no token)
+            </button>
+          </>
+        ) : (
+          <>
+            {/* All names claimed — 0x fallback */}
+            <div className="bg-nad-dark rounded-lg p-4 mb-4 border border-gray-700 text-center">
+              <p className="text-gray-400 mb-2">All legendary names have been claimed!</p>
+              <p className="text-gray-500 text-sm">
+                You'll get <span className="text-gray-300 font-mono">{auth.wallet.slice(0, 10).toLowerCase()}@nadmail.ai</span>
+              </p>
+            </div>
+
+            {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+
+            <button
+              onClick={() => handleRegister()}
+              disabled={submitting}
+              className="w-full bg-nad-purple text-white py-3 rounded-lg font-medium hover:bg-purple-600 transition disabled:opacity-50 text-lg"
+            >
+              {submitting ? 'Creating...' : 'Get Wallet Email'}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
