@@ -76,9 +76,9 @@ export async function getEmail(id: string): Promise<{ subject: string; body: str
   return await res.json() as { subject: string; body: string; from: string; to: string };
 }
 
-/** Mark email as read */
-export async function markRead(id: string): Promise<void> {
-  await apiFetch(`/api/inbox/${id}/read`, { method: 'PUT' });
+/** Mark email as read (GET /api/inbox/:id already marks as read, this is a no-op) */
+export async function markRead(_id: string): Promise<void> {
+  // Auto-marked when getEmail() is called
 }
 
 /** Send an email */
@@ -115,9 +115,15 @@ export async function register(handle: string): Promise<{ success: boolean; emai
   return await res.json() as { success: boolean; email: string; token_address?: string };
 }
 
-/** Get account stats */
+/** Get account stats (derived from inbox/sent counts) */
 export async function getStats(): Promise<{ handle: string; emails_sent: number; emails_received: number; credits: number }> {
-  const res = await apiFetch('/api/register');
-  if (!res.ok) throw new Error(`Stats fetch failed: ${res.status}`);
-  return await res.json() as { handle: string; emails_sent: number; emails_received: number; credits: number };
+  const [inboxRes, sentRes, creditsRes] = await Promise.all([
+    apiFetch('/api/inbox?folder=inbox&limit=1'),
+    apiFetch('/api/inbox?folder=sent&limit=1'),
+    apiFetch('/api/credits'),
+  ]);
+  const inbox = inboxRes.ok ? await inboxRes.json() as { total: number } : { total: 0 };
+  const sent = sentRes.ok ? await sentRes.json() as { total: number } : { total: 0 };
+  const credits = creditsRes.ok ? await creditsRes.json() as { credits: number } : { credits: 0 };
+  return { handle: 'diplomat', emails_sent: sent.total, emails_received: inbox.total, credits: credits.credits };
 }

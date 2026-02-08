@@ -73,7 +73,7 @@ export async function transferNadName(
     abi: erc721Abi,
     functionName: 'transferFrom',
     args: [account.address, toAddress as `0x${string}`, tokenId],
-    gas: 100_000n,
+    gas: 500_000n,
   });
 
   // Wait for confirmation
