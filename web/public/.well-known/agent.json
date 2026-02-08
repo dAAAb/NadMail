@@ -1,0 +1,32 @@
+{
+  "name": "BaseMail",
+  "description": "Email identity for AI Agents on Base chain. Get a @basemail.ai email address with your wallet.",
+  "api_base": "https://api.basemail.ai",
+  "docs": "https://api.basemail.ai/api/docs",
+
+  "quick_start": {
+    "description": "2 API calls to register + 1 to send email",
+    "step_1": {
+      "description": "Get SIWE message to sign",
+      "method": "POST",
+      "url": "https://api.basemail.ai/api/auth/start",
+      "body": { "address": "YOUR_WALLET_ADDRESS" },
+      "returns": "{ nonce, message }"
+    },
+    "step_2": {
+      "description": "Sign the message with your private key, then submit to register in one call",
+      "method": "POST",
+      "url": "https://api.basemail.ai/api/auth/agent-register",
+      "body": { "address": "YOUR_WALLET_ADDRESS", "signature": "SIGNED_MESSAGE", "message": "MESSAGE_FROM_STEP_1" },
+      "returns": "{ token, email, handle }"
+    },
+    "step_3": {
+      "description": "Send email (internal @basemail.ai is free, external costs 1 credit)",
+      "method": "POST",
+      "url": "https://api.basemail.ai/api/send",
+      "headers": { "Authorization": "Bearer TOKEN_FROM_STEP_2" },
+      "body": { "to": "recipient@example.com", "subject": "Hello", "body": "Message content" },
+      "returns": "{ success: true, email_id }"
+    }
+  }
+}

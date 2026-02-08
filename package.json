@@ -1,0 +1,19 @@
+{
+  "name": "basemail",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Email identity for AI Agents on Base chain",
+  "workspaces": [
+    "contracts",
+    "worker",
+    "web"
+  ],
+  "scripts": {
+    "dev:worker": "npm run dev --workspace=worker",
+    "dev:web": "npm run dev --workspace=web",
+    "deploy:worker": "npm run deploy --workspace=worker",
+    "deploy:web": "npm run deploy --workspace=web",
+    "db:migrate": "npm run db:migrate --workspace=worker",
+    "test:contracts": "npm test --workspace=contracts"
+  }
+}

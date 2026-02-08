@@ -1,0 +1,27 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.env.local
+
+# Hardhat
+artifacts/
+cache/
+typechain-types/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Test files with credentials
+worker/test-*.mjs
+
+# Build
+*.tsbuildinfo
+node_modules/
+.wrangler/

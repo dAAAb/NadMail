@@ -1,0 +1,35 @@
+name = "basemail-worker"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Custom Domain — 自動建立 DNS record 和 SSL 憑證
+routes = [
+  { pattern = "api.basemail.ai", custom_domain = true }
+]
+
+[vars]
+DOMAIN = "basemail.ai"
+BASE_CHAIN_ID = "8453"
+WALLET_ADDRESS = "0x4BbdB896eCEd7d202AD7933cEB220F7f39d0a9Fe"
+REGISTRY_CONTRACT = "0x54569D87348ba71e33832b78D61FBC0B94Fed17D"
+
+# D1 Database — 帳號與郵件索引
+[[d1_databases]]
+binding = "DB"
+database_name = "basemail-db"
+database_id = "58b739b9-854c-4998-8f7c-498251f68f14"
+
+# R2 Bucket — 原始郵件儲存
+[[r2_buckets]]
+binding = "EMAIL_STORE"
+bucket_name = "basemail-emails"
+
+# KV Namespace — SIWE nonce 暫存
+[[kv_namespaces]]
+binding = "NONCE_KV"
+id = "6424876ef5e449fea7ba9e800514d528"
+
+# Email 寄信 binding（不限制目的地，由程式碼控制）
+[[send_email]]
+name = "SEND_EMAIL"

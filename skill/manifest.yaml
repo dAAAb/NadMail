@@ -1,0 +1,234 @@
+name: basemail
+version: 0.2.0
+description: |
+  Email identity service for AI Agents on Base chain.
+  Register a @basemail.ai email tied to your Basename or wallet address,
+  send and receive emails — no CAPTCHAs, wallet is identity.
+  Supports automatic Basename purchase for agents without one.
+
+author: basemail-team
+homepage: https://basemail.ai
+api_docs: https://api.basemail.ai/api/docs
+
+chain: base
+chain_id: 8453
+
+# ══════════════════════════════════════════════
+# QUICK START: 2 API calls to register, 1 to send
+# ══════════════════════════════════════════════
+#
+# Step 1: POST /api/auth/start { address }
+#         → { nonce, message }
+#
+# Step 2: Sign the "message" with your wallet private key
+#
+# Step 3: POST /api/auth/agent-register {
+#           address, signature, message,
+#           basename: "yourname.base.eth"  ← optional, for Basename owners
+#         }
+#         → { token, email, handle }
+#
+# Step 4: POST /api/send { to, subject, body }
+#         → { success, email_id }
+#
+# That's it! Internal @basemail.ai emails are FREE.
+# ══════════════════════════════════════════════
+
+commands:
+  register:
+    description: |
+      Register a @basemail.ai email address tied to your Base wallet.
+      If you own a Basename, pass it to get a short handle (e.g. alice@basemail.ai).
+      If you don't have a Basename, you get 0x...@basemail.ai — and can upgrade later.
+    params:
+      basename:
+        type: string
+        required: false
+        description: |
+          Your existing Basename (e.g. 'alice.base.eth').
+          Ownership is verified on-chain via ownerOf().
+          If not provided, reverse resolution is attempted.
+          If that fails, you get 0x address as handle.
+    returns:
+      email: "Registered email address (e.g. alice@basemail.ai)"
+      handle: "Email handle"
+      token: "JWT token for subsequent API calls (24hr expiry)"
+      upgrade_hint: "Instructions to upgrade to Basename handle (if registered with 0x)"
+
+  upgrade:
+    description: |
+      Upgrade from 0x...@basemail.ai to a Basename handle.
+      Two options: claim an existing Basename you own, or buy a new one (we pay gas).
+    params:
+      basename:
+        type: string
+        required: false
+        description: "Your existing Basename to claim (e.g. 'alice.base.eth')"
+      auto_basename:
+        type: boolean
+        required: false
+        description: "Set to true to buy a new Basename on-chain (we pay gas + fees)"
+      basename_name:
+        type: string
+        required: false
+        description: "Desired name to purchase (required if auto_basename is true). 3-32 chars, a-z, 0-9, - only."
+    returns:
+      email: "New email address"
+      handle: "New handle"
+      old_handle: "Previous 0x handle"
+      basename: "Basename (e.g. alice.base.eth)"
+      token: "New JWT token"
+
+  check_price:
+    description: Check Basename availability and registration price before purchasing
+    params:
+      name:
+        type: string
+        required: true
+        description: "Desired Basename (without .base.eth suffix). e.g. 'alice'"
+    returns:
+      available: "Whether the name is available"
+      price_wei: "Registration price in wei"
+      price_eth: "Registration price in ETH"
+
+  send:
+    description: Send an email from your @basemail.ai address
+    params:
+      to:
+        type: string
+        required: true
+        description: "Recipient email address"
+      subject:
+        type: string
+        required: true
+        description: "Email subject"
+      body:
+        type: string
+        required: true
+        description: "Email body (plain text)"
+      html:
+        type: string
+        required: false
+        description: "Email body (HTML, optional)"
+    returns:
+      success: "Whether the email was sent successfully"
+      email_id: "ID of the sent email"
+
+  inbox:
+    description: Check your inbox for received emails
+    params:
+      limit:
+        type: number
+        required: false
+        default: 10
+        description: "Number of emails to fetch (max 100)"
+      folder:
+        type: string
+        required: false
+        default: inbox
+        enum: [inbox, sent]
+        description: "Which folder to check"
+    returns:
+      emails: "List of email objects"
+      total: "Total email count"
+      unread: "Unread email count"
+
+  read:
+    description: Read a specific email by ID
+    params:
+      id:
+        type: string
+        required: true
+        description: "Email ID"
+    returns:
+      email: "Full email object with body content"
+
+  identity:
+    description: Look up a BaseMail user by handle or wallet address (public, no auth)
+    params:
+      query:
+        type: string
+        required: true
+        description: "Handle name or wallet address to look up"
+    returns:
+      handle: "Email handle"
+      email: "Full email address"
+      wallet: "Wallet address"
+      basename: "Associated Basename"
+
+# ══════════════════════════════════════════════
+# API Configuration
+# ══════════════════════════════════════════════
+api:
+  base_url: https://api.basemail.ai
+  auth_type: siwe
+  auth_flow:
+    - step: start
+      method: POST
+      endpoint: /api/auth/start
+      body: '{ "address": "YOUR_WALLET_ADDRESS" }'
+      description: "Get nonce + SIWE message in one call"
+      response: '{ nonce, message }'
+
+    - step: sign
+      description: |
+        Sign the "message" from step 1 with your wallet private key.
+        Use personal_sign (EIP-191). Example with viem:
+          import { privateKeyToAccount } from 'viem/accounts';
+          const account = privateKeyToAccount('0xYOUR_KEY');
+          const signature = await account.signMessage({ message });
+
+    - step: agent-register
+      method: POST
+      endpoint: /api/auth/agent-register
+      body: '{ "address": "...", "signature": "0x...", "message": "...", "basename": "optional.base.eth" }'
+      description: |
+        Verify signature + auto-register in one call.
+        Pass optional "basename" to register with your Basename handle.
+        If already registered, returns existing account + new token.
+      response: '{ token, email, handle, wallet, registered, new_account, upgrade_hint? }'
+
+  # Endpoint reference
+  endpoints:
+    register: POST /api/register
+    upgrade: PUT /api/register/upgrade
+    check_price: GET /api/register/price/:name
+    check_address: GET /api/register/check/:address
+    send: POST /api/send
+    inbox: GET /api/inbox
+    read: GET /api/inbox/:id
+    identity: GET /api/identity/:query
+    credits: GET /api/credits
+    buy_credits: POST /api/credits/buy
+
+# ══════════════════════════════════════════════
+# Example: Complete Agent Flow (1-2-3 Registration)
+# ══════════════════════════════════════════════
+#
+# --- Scenario A: Agent already has a Basename ---
+#
+#   1. POST /api/auth/start { address: "0xABC" }
+#   2. Sign message → signature
+#   3. POST /api/auth/agent-register {
+#        address: "0xABC", signature, message,
+#        basename: "myagent.base.eth"
+#      }
+#   → Done! Email: myagent@basemail.ai
+#
+# --- Scenario B: Agent has NO Basename ---
+#
+#   1. POST /api/auth/start { address: "0xABC" }
+#   2. Sign → POST /api/auth/agent-register { address, signature, message }
+#      → Registered as 0xABC@basemail.ai (with upgrade_hint)
+#   3. GET /api/register/price/myagent → check price
+#   4. PUT /api/register/upgrade {
+#        auto_basename: true,
+#        basename_name: "myagent"
+#      }
+#   → Upgraded! Email: myagent@basemail.ai
+#
+# --- Scenario C: Just send email, no Basename needed ---
+#
+#   1. POST /api/auth/start → sign → POST /api/auth/agent-register
+#   2. POST /api/send { to, subject, body }
+#   → Done! Sent from 0xABC@basemail.ai
