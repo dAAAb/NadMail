@@ -34,11 +34,25 @@ function hashCode(str: string): number {
   return Math.abs(hash);
 }
 
-export function generateAvatarSvg(handle: string): string {
+export async function generateAvatarSvg(handle: string): Promise<string> {
   const hash = hashCode(handle);
   const hue1 = hash % 360;
   const hue2 = (hash * 7) % 360;
-  const dicebearUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=${handle}`;
+
+  // Fetch dicebear robot SVG and embed inline (external URLs don't work in uploaded SVGs)
+  let robotImage = '';
+  try {
+    const res = await fetch(`https://api.dicebear.com/7.x/bottts/svg?seed=${handle}`);
+    if (res.ok) {
+      const svgText = await res.text();
+      // Strip metadata (contains unicode chars that break btoa) then base64 encode
+      const svgClean = svgText.replace(/<metadata[^>]*>[\s\S]*?<\/metadata>/g, '');
+      const base64 = btoa(svgClean);
+      robotImage = `<image href="data:image/svg+xml;base64,${base64}" width="512" height="512" clip-path="url(#clip)" opacity="0.85"/>`;
+    }
+  } catch (e) {
+    // Fallback: gradient-only background
+  }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
@@ -49,7 +63,7 @@ export function generateAvatarSvg(handle: string): string {
     <clipPath id="clip"><rect width="512" height="512" rx="64"/></clipPath>
   </defs>
   <rect width="512" height="512" rx="64" fill="url(#g)"/>
-  <image href="${dicebearUrl}" width="512" height="512" clip-path="url(#clip)" opacity="0.85"/>
+  ${robotImage}
 </svg>`;
 }
 
@@ -70,13 +84,13 @@ export async function createToken(
   // Token name max 32 chars: 0x users get short prefix, .nad users get full handle
   const shortHandle = isWalletHandle ? handle.slice(0, 10) : handle;
   const tokenName = `${shortHandle}@${env.DOMAIN}`;
-  const tokenSymbol = shortHandle.toUpperCase();
+  const tokenSymbol = shortHandle.slice(0, 10).toUpperCase();
   const description = isWalletHandle
     ? `NadMail token for ${shortHandle}...@${env.DOMAIN}. Every email to this user is a micro-investment.`
     : `NadMail token for ${handle}@${env.DOMAIN}. Every email to this user is a micro-investment.`;
 
-  // Generate avatar SVG
-  const avatarSvg = generateAvatarSvg(handle);
+  // Generate avatar SVG (fetches dicebear robot + embeds inline)
+  const avatarSvg = await generateAvatarSvg(handle);
   const avatarBlob = new Blob([avatarSvg], { type: 'image/svg+xml' });
 
   // Create token with 1 MON initial buy — tokens go to Worker wallet

@@ -19,5 +19,8 @@
   },
   "dependencies": {
     "@nadnameservice/nns-viem-sdk": "^2.0.0"
+  },
+  "devDependencies": {
+    "siwe": "^3.0.0"
   }
 }

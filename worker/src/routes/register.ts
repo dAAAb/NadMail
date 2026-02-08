@@ -136,9 +136,7 @@ registerRoutes.post('/', authMiddleware(), async (c) => {
     try {
       const result = await createNadFunToken(handle, auth.wallet, c.env);
       tokenAddress = result.tokenAddress;
-      tokenSymbol = /^0x[a-f0-9]{40}$/.test(handle)
-        ? handle.slice(0, 10).toUpperCase()
-        : handle.toUpperCase();
+      tokenSymbol = handle.slice(0, 10).toUpperCase();
       tokenCreateTx = result.tx;
 
       // Distribute initial tokens in background (50/50 creator + platform)
@@ -194,7 +192,7 @@ registerRoutes.post('/retry-token', authMiddleware(), async (c) => {
 
   try {
     const result = await createNadFunToken(account.handle, auth.wallet, c.env);
-    const tokenSymbol = account.handle.toUpperCase();
+    const tokenSymbol = account.handle.slice(0, 10).toUpperCase();
 
     await c.env.DB.prepare(
       'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'

@@ -87,23 +87,26 @@ authRoutes.post('/agent-register', async (c) => {
   let nadName: string | null = null;
   let nftTransferTx: string | null = null;
 
+  let claimFreeName = false;
+
   if (requestedHandle) {
     handle = requestedHandle.toLowerCase().trim();
     if (!isValidHandle(handle)) {
       return c.json({ error: 'Invalid handle format (3-20 chars, a-z, 0-9, _ only)' }, 400);
     }
 
-    // Must be a free .nad name
+    // Check if it's a free .nad name in our pool
     const freeName = await c.env.DB.prepare(
       'SELECT name, claimed_by FROM free_nad_names WHERE name = ?'
     ).bind(handle).first<{ name: string; claimed_by: string | null }>();
 
-    if (!freeName) {
-      return c.json({ error: 'This name is not available for claiming' }, 400);
+    if (freeName) {
+      if (freeName.claimed_by !== null) {
+        return c.json({ error: 'This name has already been claimed' }, 409);
+      }
+      claimFreeName = true;
     }
-    if (freeName.claimed_by !== null) {
-      return c.json({ error: 'This name has already been claimed' }, 409);
-    }
+    // If not in free pool, allow as custom handle (e.g. user already owns their own .nad)
 
     nadName = `${handle}.nad`;
   } else {
@@ -125,8 +128,8 @@ authRoutes.post('/agent-register', async (c) => {
      VALUES (?, ?, ?, ?, 'free')`
   ).bind(handle, wallet, nadName, Math.floor(Date.now() / 1000)).run();
 
-  // Claim free name + transfer NFT (after account exists for FK constraint)
-  if (requestedHandle) {
+  // Claim free name + transfer NFT (only for names in our free pool)
+  if (claimFreeName) {
     await c.env.DB.prepare(
       'UPDATE free_nad_names SET claimed_by = ?, claimed_at = ? WHERE name = ? AND claimed_by IS NULL'
     ).bind(wallet, Math.floor(Date.now() / 1000), handle).run();
@@ -155,9 +158,7 @@ authRoutes.post('/agent-register', async (c) => {
   try {
     const tokenResult = await createNadFunToken(handle, wallet, c.env);
     tokenAddress = tokenResult.tokenAddress;
-    tokenSymbol = /^0x[a-f0-9]{40}$/.test(handle)
-      ? handle.slice(0, 10).toUpperCase()
-      : handle.toUpperCase();
+    tokenSymbol = handle.slice(0, 10).toUpperCase();
 
     await c.env.DB.prepare(
       'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'
