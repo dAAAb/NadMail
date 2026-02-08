@@ -1,34 +1,38 @@
-name = "basemail-worker"
+name = "nadmail-worker"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Custom Domain — 自動建立 DNS record 和 SSL 憑證
 routes = [
-  { pattern = "api.basemail.ai", custom_domain = true }
+  { pattern = "api.nadmail.ai", custom_domain = true }
 ]
 
 [vars]
-DOMAIN = "basemail.ai"
-BASE_CHAIN_ID = "8453"
+DOMAIN = "nadmail.ai"
+MONAD_RPC_URL = "https://monad-mainnet.drpc.org"
+NADFUN_API_URL = "https://api.nadapp.net"
+NADFUN_LENS = "0x7e78A8DE94f21804F7a17F4E8BF9EC2c872187ea"
+NADFUN_ROUTER = "0x6F6B8F1a20703309951a5127c45B49b1CD981A22"
+NADFUN_CURVE = "0xA7283d07812a02AFB7C09B60f8896bCEA3F90aCE"
+WMON = "0x3bd359C1119dA7Da1D913D1C4D2B7c461115433A"
 WALLET_ADDRESS = "0x4BbdB896eCEd7d202AD7933cEB220F7f39d0a9Fe"
-REGISTRY_CONTRACT = "0x54569D87348ba71e33832b78D61FBC0B94Fed17D"
 
 # D1 Database — 帳號與郵件索引
 [[d1_databases]]
 binding = "DB"
-database_name = "basemail-db"
-database_id = "58b739b9-854c-4998-8f7c-498251f68f14"
+database_name = "nadmail-db"
+database_id = "aa4c9192-f99f-450e-8474-d49764b4bd42"
 
 # R2 Bucket — 原始郵件儲存
 [[r2_buckets]]
 binding = "EMAIL_STORE"
-bucket_name = "basemail-emails"
+bucket_name = "nadmail-emails"
 
 # KV Namespace — SIWE nonce 暫存
 [[kv_namespaces]]
 binding = "NONCE_KV"
-id = "6424876ef5e449fea7ba9e800514d528"
+id = "95f56c7825ad40499b0574223b2e652f"
 
 # Email 寄信 binding（不限制目的地，由程式碼控制）
 [[send_email]]

@@ -1,12 +1,13 @@
 {
-  "name": "basemail",
+  "name": "nadmail",
   "version": "0.1.0",
   "private": true,
-  "description": "Email identity for AI Agents on Base chain",
+  "description": "Your Email is Your Meme Coin — on Monad",
   "workspaces": [
     "contracts",
     "worker",
-    "web"
+    "web",
+    "agent"
   ],
   "scripts": {
     "dev:worker": "npm run dev --workspace=worker",

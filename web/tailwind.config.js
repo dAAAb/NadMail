@@ -4,8 +4,8 @@ export default {
   theme: {
     extend: {
       colors: {
-        base: {
-          blue: '#0052FF',
+        nad: {
+          purple: '#7B3FE4',
           dark: '#0A0B0D',
           gray: '#1E2025',
           light: '#F7F7F8',

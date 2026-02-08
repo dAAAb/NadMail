@@ -1,17 +1,27 @@
 import { createConfig, http } from 'wagmi';
-import { base, mainnet, baseSepolia } from 'wagmi/chains';
 import { injected, coinbaseWallet, walletConnect } from 'wagmi/connectors';
 
+// Monad chain definition
+const monad = {
+  id: 143,
+  name: 'Monad',
+  nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
+  rpcUrls: {
+    default: { http: ['https://monad-mainnet.drpc.org'] },
+  },
+  blockExplorers: {
+    default: { name: 'MonadExplorer', url: 'https://explorer.monad.xyz' },
+  },
+} as const;
+
 export const config = createConfig({
-  chains: [base, mainnet, baseSepolia],
+  chains: [monad],
   connectors: [
-    coinbaseWallet({ appName: 'BaseMail' }),   // Primary — 放第一位
+    injected(),
     walletConnect({ projectId: 'add5558996c46a35e9f43542dc4eba29' }),
-    injected(),                                  // Fallback for browser extensions
+    coinbaseWallet({ appName: 'NadMail' }),
   ],
   transports: {
-    [base.id]: http(),
-    [mainnet.id]: http(),
-    [baseSepolia.id]: http(),
+    [monad.id]: http(),
   },
 });

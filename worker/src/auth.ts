@@ -65,11 +65,11 @@ export function buildSiweMessage(address: string, nonce: string, domain: string)
     `${domain} wants you to sign in with your Ethereum account:`,
     address,
     '',
-    'Sign in to BaseMail - Email for AI Agents on Base',
+    'Sign in to NadMail - Your Email is Your Meme Coin',
     '',
     `URI: https://${domain}`,
     'Version: 1',
-    `Chain ID: 8453`,
+    `Chain ID: 143`,
     `Nonce: ${nonce}`,
     `Issued At: ${now}`,
   ].join('\n');

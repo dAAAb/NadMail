@@ -1,8 +1,8 @@
 /**
- * Cloudflare Email Worker — 處理所有寄到 @basemail.ai 的來信
+ * Cloudflare Email Worker — 處理所有寄到 @nadmail.ai 的來信
  *
  * 流程：
- * 1. 解析收件地址的 handle（支援 Basename handle 或 0x 地址）
+ * 1. 解析收件地址的 handle
  * 2. 查詢 D1 確認此 handle 已註冊
  * 3. 未註冊 → 拒絕（外部來信不預存，防 spam）
  * 4. 儲存原始郵件到 R2
@@ -20,7 +20,7 @@ export async function handleIncomingEmail(
   const toAddr = message.to;
   const fromAddr = message.from;
 
-  // 解析 handle（支援 basename handle 或 0x 地址格式）
+  // 解析 handle（支援 NadMail handle 或 0x 地址格式）
   const handle = extractHandle(toAddr, env.DOMAIN);
   if (!handle) {
     message.setReject(`Invalid recipient address: ${toAddr}`);
@@ -32,7 +32,7 @@ export async function handleIncomingEmail(
     'SELECT handle, webhook_url FROM accounts WHERE handle = ?'
   ).bind(handle).first<{ handle: string; webhook_url: string | null }>();
 
-  // 0x 地址 fallback：用 wallet 欄位查找已註冊帳號（如 basename 用戶）
+  // 0x 地址 fallback：用 wallet 欄位查找已註冊帳號
   if (!account && /^0x[a-f0-9]{40}$/.test(handle)) {
     account = await env.DB.prepare(
       'SELECT handle, webhook_url FROM accounts WHERE wallet = ?'
@@ -45,7 +45,7 @@ export async function handleIncomingEmail(
     return;
   }
 
-  // 使用帳號的 handle（可能是 basename）而非原始收件地址
+  // 使用帳號的 handle 而非原始收件地址
   const deliverHandle = account.handle;
 
   // 讀取郵件內容
@@ -95,8 +95,8 @@ export async function handleIncomingEmail(
 function extractHandle(toAddr: string, domain: string): string | null {
   const escapedDomain = domain.replace(/\./g, '\\.');
   // 支援兩種 handle 格式：
-  // 1. Basename handle: alice@basemail.ai (a-z, 0-9, _, -)
-  // 2. 0x 地址: 0x4bbd...9fe@basemail.ai (42 字元)
+  // 1. NadMail handle: alice@nadmail.ai (a-z, 0-9, _, -)
+  // 2. 0x 地址: 0x4bbd...9fe@nadmail.ai (42 字元)
   const match = toAddr.match(new RegExp(`^(0x[a-fA-F0-9]{40}|[a-z0-9][a-z0-9_-]*[a-z0-9])@${escapedDomain}$`, 'i'));
   return match ? match[1].toLowerCase() : null;
 }

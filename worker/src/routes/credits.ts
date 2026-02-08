@@ -5,7 +5,6 @@ import {
   formatEther,
   type Hex,
 } from 'viem';
-import { base, mainnet } from 'viem/chains';
 import { Env } from '../types';
 import { authMiddleware } from '../auth';
 
@@ -14,12 +13,17 @@ export const creditsRoutes = new Hono<{ Bindings: Env }>();
 creditsRoutes.use('/*', authMiddleware());
 
 // 1 credit = 1 封外部 email
-// 定價：1000 credits = 0.001 ETH（~$2.70）
-const CREDITS_PER_ETH = 1_000_000; // 1 ETH = 1,000,000 credits
-const MIN_PURCHASE_WEI = 100_000_000_000_000n; // 0.0001 ETH = 100 credits 最低購買量
+// 定價：10,000 credits = 1 MON
+const CREDITS_PER_MON = 10_000;
+const MIN_PURCHASE_WEI = 100_000_000_000_000_000n; // 0.1 MON = 1,000 credits 最低購買量
 
-const BASE_RPC = 'https://base.publicnode.com';
-const ETH_MAINNET_RPC = 'https://ethereum-rpc.publicnode.com';
+// Monad chain 定義
+const monadChain = {
+  id: 143,
+  name: 'Monad',
+  nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
+  rpcUrls: { default: { http: ['https://monad-mainnet.drpc.org'] } },
+} as const;
 
 /**
  * GET /api/credits
@@ -40,18 +44,19 @@ creditsRoutes.get('/', async (c) => {
     handle: auth.handle,
     credits: account?.credits || 0,
     pricing: {
-      credits_per_eth: CREDITS_PER_ETH,
-      cost_per_email_usd: '$0.002',
-      example: '0.001 ETH = 1,000 email credits',
-      min_purchase: '0.0001 ETH = 100 credits',
+      credits_per_mon: CREDITS_PER_MON,
+      cost_per_email: '0.0001 MON',
+      example: '1 MON = 10,000 email credits',
+      min_purchase: '0.1 MON = 1,000 credits',
       deposit_address: c.env.WALLET_ADDRESS || 'Contact admin',
+      chain: 'Monad (chainId: 143)',
     },
   });
 });
 
 /**
  * POST /api/credits/buy
- * 用 Base 鏈上的 ETH 轉帳購買 credits
+ * 用 Monad 鏈上的 MON 轉帳購買 credits
  *
  * Body: { tx_hash: string }
  *
@@ -69,7 +74,7 @@ creditsRoutes.post('/buy', async (c) => {
     return c.json({ error: 'No email registered' }, 403);
   }
 
-  const { tx_hash, chain_id } = await c.req.json<{ tx_hash: string; chain_id?: number }>();
+  const { tx_hash } = await c.req.json<{ tx_hash: string }>();
 
   if (!tx_hash || !tx_hash.startsWith('0x')) {
     return c.json({ error: 'Invalid transaction hash' }, 400);
@@ -84,32 +89,27 @@ creditsRoutes.post('/buy', async (c) => {
     return c.json({ error: 'Transaction already used' }, 409);
   }
 
-  // 自動偵測交易在哪條鏈上（先嘗試指定鏈，再嘗試另一條）
-  const chainsToTry: Array<{ chain: typeof base; rpc: string; id: number }> = chain_id === 1
-    ? [{ chain: mainnet, rpc: ETH_MAINNET_RPC, id: 1 }, { chain: base, rpc: BASE_RPC, id: 8453 }]
-    : [{ chain: base, rpc: BASE_RPC, id: 8453 }, { chain: mainnet, rpc: ETH_MAINNET_RPC, id: 1 }];
+  // 驗證 Monad 鏈上交易
+  const client = createPublicClient({
+    chain: monadChain,
+    transport: http(c.env.MONAD_RPC_URL),
+  });
 
   let tx;
   let receipt;
-  let foundChainId = 0;
 
-  for (const attempt of chainsToTry) {
-    try {
-      const client = createPublicClient({ chain: attempt.chain, transport: http(attempt.rpc) });
-      receipt = await client.waitForTransactionReceipt({
-        hash: tx_hash as Hex,
-        timeout: 15_000,
-      });
-      tx = await client.getTransaction({ hash: tx_hash as Hex });
-      foundChainId = attempt.id;
-      break;
-    } catch {
-      // Try next chain
-    }
+  try {
+    receipt = await client.waitForTransactionReceipt({
+      hash: tx_hash as Hex,
+      timeout: 15_000,
+    });
+    tx = await client.getTransaction({ hash: tx_hash as Hex });
+  } catch {
+    return c.json({ error: 'Transaction not found on Monad. Please wait a moment and try again.' }, 404);
   }
 
   if (!tx || !receipt) {
-    return c.json({ error: 'Transaction not found on Base or ETH Mainnet. Please wait a moment and try again.' }, 404);
+    return c.json({ error: 'Transaction not found on Monad.' }, 404);
   }
 
   // 確認交易成功
@@ -121,7 +121,7 @@ creditsRoutes.post('/buy', async (c) => {
   const walletAddress = c.env.WALLET_ADDRESS?.toLowerCase();
   if (!walletAddress || tx.to?.toLowerCase() !== walletAddress) {
     return c.json({
-      error: 'Transaction recipient is not the BaseMail deposit address',
+      error: 'Transaction recipient is not the NadMail deposit address',
       expected: walletAddress,
     }, 400);
   }
@@ -129,13 +129,13 @@ creditsRoutes.post('/buy', async (c) => {
   // 確認金額
   if (tx.value < MIN_PURCHASE_WEI) {
     return c.json({
-      error: `Minimum purchase is 0.0001 ETH (100 credits)`,
+      error: `Minimum purchase is 0.1 MON (1,000 credits)`,
       sent: formatEther(tx.value),
     }, 400);
   }
 
-  // 計算 credits（1 ETH = 1,000,000 credits）
-  const credits = Number((tx.value * BigInt(CREDITS_PER_ETH)) / BigInt(1e18));
+  // 計算 credits（1 MON = 10,000 credits）
+  const credits = Number((tx.value * BigInt(CREDITS_PER_MON)) / BigInt(1e18));
 
   // 記錄交易
   const txId = `${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
@@ -163,10 +163,10 @@ creditsRoutes.post('/buy', async (c) => {
   return c.json({
     success: true,
     purchased: credits,
-    eth_spent: formatEther(tx.value),
+    mon_spent: formatEther(tx.value),
     balance: newBalance?.credits || credits,
     tx_hash,
-    chain: foundChainId === 1 ? 'ETH Mainnet' : 'Base',
+    chain: 'Monad',
   });
 });
 

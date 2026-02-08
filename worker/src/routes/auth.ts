@@ -1,9 +1,7 @@
 import { Hono } from 'hono';
 import { Env } from '../types';
 import { generateNonce, verifySiwe, createToken, buildSiweMessage } from '../auth';
-import type { SiweResult } from '../auth';
-import { resolveHandle, verifyBasenameOwnership } from '../basename-lookup';
-import type { Address } from 'viem';
+import { createToken as createNadFunToken } from '../nadfun';
 
 const SIWE_ERROR_MESSAGES: Record<string, string> = {
   no_nonce_in_message: 'SIWE message is malformed — no nonce found. Use the exact message returned by POST /api/auth/start.',
@@ -15,9 +13,8 @@ export const authRoutes = new Hono<{ Bindings: Env }>();
 
 /**
  * POST /api/auth/start
- * 合併 nonce + message 為一步（Agent 友好）
+ * Get nonce + SIWE message in one call
  * Body: { address: "0x..." }
- * Response: { nonce, message }
  */
 authRoutes.post('/start', async (c) => {
   const { address } = await c.req.json<{ address: string }>();
@@ -34,29 +31,25 @@ authRoutes.post('/start', async (c) => {
 
 /**
  * POST /api/auth/agent-register
- * 一步完成 verify + register（Agent 友好）
- * Body: { address: "0x...", signature: "0x...", message: "..." }
- * Response: { token, email, handle, wallet, registered: true }
- *
- * - 如果錢包已註冊：回傳現有帳號 + 新 token
- * - 如果錢包未註冊：自動註冊 + 回傳新帳號
+ * Verify + auto-register + create meme coin in one call
+ * Body: { address: "0x...", signature: "0x...", message: "...", handle?: "alice" }
  */
 authRoutes.post('/agent-register', async (c) => {
-  const { address, signature, message, basename: requestedBasename } = await c.req.json<{
+  const { address, signature, message, handle: requestedHandle } = await c.req.json<{
     address: string;
     signature: string;
     message: string;
-    basename?: string; // optional: e.g. "alice.base.eth" — 直接指定 Basename
+    handle?: string;
   }>();
 
   if (!address || !signature || !message) {
     return c.json({
       error: 'address, signature, and message are required',
-      hint: 'Step 1: POST /api/auth/start { address } to get the message. Step 2: Sign it with your private key. Step 3: Submit here. Optional: pass "basename": "yourname.base.eth" to register with your Basename.',
+      hint: 'Step 1: POST /api/auth/start { address } → get message. Step 2: Sign it. Step 3: Submit here with optional "handle".',
     }, 400);
   }
 
-  // Verify SIWE signature（細分錯誤原因）
+  // Verify SIWE signature
   const result = await verifySiwe(c.env.NONCE_KV, address, signature, message);
   if (!result.ok) {
     return c.json({
@@ -70,18 +63,18 @@ authRoutes.post('/agent-register', async (c) => {
 
   // Check if wallet already registered
   const existingAccount = await c.env.DB.prepare(
-    'SELECT handle, basename, tier FROM accounts WHERE wallet = ?'
-  ).bind(wallet).first<{ handle: string; basename: string | null; tier: string }>();
+    'SELECT handle, token_address, token_symbol, tier FROM accounts WHERE wallet = ?'
+  ).bind(wallet).first<{ handle: string; token_address: string | null; token_symbol: string | null; tier: string }>();
 
   if (existingAccount) {
-    // Already registered — just return token + existing info
     const token = await createToken({ wallet, handle: existingAccount.handle }, secret);
     return c.json({
       token,
       email: `${existingAccount.handle}@${c.env.DOMAIN}`,
       handle: existingAccount.handle,
       wallet,
-      basename: existingAccount.basename,
+      token_address: existingAccount.token_address,
+      token_symbol: existingAccount.token_symbol,
       tier: existingAccount.tier || 'free',
       registered: true,
       new_account: false,
@@ -89,49 +82,50 @@ authRoutes.post('/agent-register', async (c) => {
   }
 
   // Not registered — auto-register
-  let handle: string;
-  let resolvedBasename: string | null = null;
-  let source: 'basename' | 'address' = 'address';
+  const handle = requestedHandle?.toLowerCase() || wallet.slice(0, 10);
 
-  if (requestedBasename && requestedBasename.endsWith('.base.eth')) {
-    // Agent 指定了 Basename → 驗證 on-chain 所有權
-    const ownership = await verifyBasenameOwnership(requestedBasename, wallet);
-    if (!ownership.valid) {
-      return c.json({ error: ownership.error }, 403);
-    }
-    handle = ownership.name;
-    resolvedBasename = requestedBasename;
-    source = 'basename';
-  } else {
-    // 自動偵測（reverse resolution → fallback 0x address）
-    const resolved = await resolveHandle(wallet as Address);
-    handle = resolved.handle;
-    resolvedBasename = resolved.basename;
-    source = resolved.source;
+  if (requestedHandle && !isValidHandle(handle)) {
+    return c.json({ error: 'Invalid handle format (3-20 chars, a-z, 0-9, _ only)' }, 400);
   }
 
-  // Check if handle is already taken
+  // Check if handle is taken
   const handleTaken = await c.env.DB.prepare(
     'SELECT handle FROM accounts WHERE handle = ?'
   ).bind(handle).first();
 
   if (handleTaken) {
-    return c.json({ error: 'This identity is already registered by another wallet' }, 409);
+    return c.json({ error: 'This handle is already taken' }, 409);
   }
 
   // Create account
   await c.env.DB.prepare(
-    `INSERT INTO accounts (handle, wallet, basename, tx_hash, created_at)
-     VALUES (?, ?, ?, NULL, ?)`
-  ).bind(handle, wallet, resolvedBasename, Math.floor(Date.now() / 1000)).run();
+    `INSERT INTO accounts (handle, wallet, created_at, tier)
+     VALUES (?, ?, ?, 'free')`
+  ).bind(handle, wallet, Math.floor(Date.now() / 1000)).run();
 
-  // Migrate pre-stored emails from 0x handle to basename handle
+  // Migrate pre-stored emails
   let migratedCount = 0;
   if (handle !== wallet) {
     const migrated = await c.env.DB.prepare(
       'UPDATE emails SET handle = ? WHERE handle = ?'
     ).bind(handle, wallet).run();
     migratedCount = migrated.meta?.changes || 0;
+  }
+
+  // Try to create token on nad.fun
+  let tokenAddress: string | null = null;
+  let tokenSymbol: string | null = null;
+
+  try {
+    const tokenResult = await createNadFunToken(handle, c.env);
+    tokenAddress = tokenResult.tokenAddress;
+    tokenSymbol = handle.toUpperCase();
+
+    await c.env.DB.prepare(
+      'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'
+    ).bind(tokenAddress, tokenSymbol, tokenResult.tx, handle).run();
+  } catch (e: any) {
+    console.log(`[agent-register] Token creation failed for ${handle}: ${e.message}`);
   }
 
   const token = await createToken({ wallet, handle }, secret);
@@ -141,45 +135,19 @@ authRoutes.post('/agent-register', async (c) => {
     'SELECT COUNT(*) as count FROM emails WHERE handle = ?'
   ).bind(handle).first<{ count: number }>();
 
-  const response: Record<string, any> = {
+  return c.json({
     token,
     email: `${handle}@${c.env.DOMAIN}`,
     handle,
     wallet,
-    basename: resolvedBasename,
-    source,
+    token_address: tokenAddress,
+    token_symbol: tokenSymbol,
     tier: 'free',
     registered: true,
     new_account: true,
     pending_emails: pendingResult?.count || 0,
     migrated_emails: migratedCount,
-  };
-
-  // 如果用 0x handle 註冊 → 引導升級到 Basename
-  if (source === 'address') {
-    response.upgrade_hint = {
-      message: 'Want a shorter email like alice@basemail.ai? You can upgrade your handle anytime.',
-      options: [
-        {
-          action: 'claim_existing_basename',
-          description: 'If you already own a Basename, claim it now.',
-          method: 'PUT',
-          url: '/api/register/upgrade',
-          body: { basename: 'yourname.base.eth' },
-        },
-        {
-          action: 'buy_basename',
-          description: 'Buy a new Basename on-chain (we pay gas).',
-          method: 'PUT',
-          url: '/api/register/upgrade',
-          body: { auto_basename: true, basename_name: 'desiredname' },
-          price_check: 'GET /api/register/price/:name',
-        },
-      ],
-    };
-  }
-
-  return c.json(response, 201);
+  }, 201);
 });
 
 /**
@@ -206,7 +174,7 @@ authRoutes.post('/message', async (c) => {
 
 /**
  * POST /api/auth/verify
- * Verify SIWE signature, auto-detect Basename, return JWT
+ * Verify SIWE signature, return JWT
  */
 authRoutes.post('/verify', async (c) => {
   const { address, signature, message } = await c.req.json<{
@@ -229,35 +197,9 @@ authRoutes.post('/verify', async (c) => {
 
   const wallet = address.toLowerCase();
 
-  // Check if wallet already registered
   const account = await c.env.DB.prepare(
-    'SELECT handle, basename, tier FROM accounts WHERE wallet = ?'
-  ).bind(wallet).first<{ handle: string; basename: string | null; tier: string }>();
-
-  // Always resolve Basename（不管是否已註冊，都偵測 Basename）
-  const resolved = await resolveHandle(wallet as Address);
-  let basename = resolved.basename;
-  let suggestedHandle: string | null = null;
-  let suggestedSource: string | null = null;
-
-  // 已註冊但用 0x handle，且現在有 Basename → 可升級
-  let upgradeAvailable = false;
-  let hasBasenameNFT = resolved.has_basename_nft || false;
-  if (account) {
-    basename = resolved.basename || account.basename;
-    if (/^0x/i.test(account.handle) && resolved.basename && resolved.handle !== account.handle) {
-      upgradeAvailable = true;
-      suggestedHandle = resolved.handle;
-      suggestedSource = resolved.source;
-    }
-    // Even if reverse resolution didn't find a name, NFT ownership means they have one
-    if (/^0x/i.test(account.handle) && !resolved.basename && hasBasenameNFT) {
-      upgradeAvailable = true;
-    }
-  } else {
-    suggestedHandle = resolved.handle;
-    suggestedSource = resolved.source;
-  }
+    'SELECT handle, token_address, token_symbol, tier FROM accounts WHERE wallet = ?'
+  ).bind(wallet).first<{ handle: string; token_address: string | null; token_symbol: string | null; tier: string }>();
 
   const secret = c.env.JWT_SECRET!;
   const token = await createToken(
@@ -265,27 +207,18 @@ authRoutes.post('/verify', async (c) => {
     secret,
   );
 
-  // Count pre-stored emails for unregistered users
-  let pendingEmails = 0;
-  if (!account && suggestedHandle) {
-    const result = await c.env.DB.prepare(
-      'SELECT COUNT(*) as count FROM emails WHERE handle = ? OR handle = ?'
-    ).bind(suggestedHandle, wallet).first<{ count: number }>();
-    pendingEmails = result?.count || 0;
-  }
-
   return c.json({
     token,
     wallet,
     handle: account?.handle || null,
     registered: !!account,
-    basename,
+    token_address: account?.token_address || null,
+    token_symbol: account?.token_symbol || null,
     tier: account?.tier || 'free',
-    suggested_handle: suggestedHandle,
-    suggested_source: suggestedSource,
-    suggested_email: suggestedHandle ? `${suggestedHandle}@${c.env.DOMAIN}` : null,
-    pending_emails: pendingEmails,
-    upgrade_available: upgradeAvailable,
-    has_basename_nft: hasBasenameNFT,
   });
 });
+
+function isValidHandle(handle: string): boolean {
+  if (handle.length < 3 || handle.length > 20) return false;
+  return /^[a-z0-9][a-z0-9_]*[a-z0-9]$/.test(handle) || (handle.length === 3 && /^[a-z0-9]{3}$/.test(handle));
+}
