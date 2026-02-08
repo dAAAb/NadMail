@@ -57,21 +57,29 @@ export function generateAvatarSvg(handle: string): string {
 // Token 建立（使用 SDK createToken）
 // ════════════════════════════════════════════
 
+const INITIAL_BUY_AMOUNT = parseEther('1'); // 1 MON initial buy per token
+
 export async function createToken(
   handle: string,
+  creatorWallet: string,
   env: Env,
 ): Promise<{ tokenAddress: string; tx: string }> {
   const sdk = getSDK(env);
 
-  const tokenName = `${handle}@${env.DOMAIN}`;
-  const tokenSymbol = handle.toUpperCase();
-  const description = `NadMail token for ${handle}@${env.DOMAIN}. Every email to this user is a micro-investment.`;
+  const isWalletHandle = /^0x[a-f0-9]{40}$/.test(handle);
+  // Token name max 32 chars: 0x users get short prefix, .nad users get full handle
+  const shortHandle = isWalletHandle ? handle.slice(0, 10) : handle;
+  const tokenName = `${shortHandle}@${env.DOMAIN}`;
+  const tokenSymbol = shortHandle.toUpperCase();
+  const description = isWalletHandle
+    ? `NadMail token for ${shortHandle}...@${env.DOMAIN}. Every email to this user is a micro-investment.`
+    : `NadMail token for ${handle}@${env.DOMAIN}. Every email to this user is a micro-investment.`;
 
   // Generate avatar SVG
   const avatarSvg = generateAvatarSvg(handle);
   const avatarBlob = new Blob([avatarSvg], { type: 'image/svg+xml' });
 
-  // Use SDK's all-in-one createToken
+  // Create token with 1 MON initial buy — tokens go to Worker wallet
   const result = await sdk.createToken({
     name: tokenName,
     symbol: tokenSymbol,
@@ -79,12 +87,49 @@ export async function createToken(
     image: avatarBlob,
     imageContentType: 'image/svg+xml',
     website: `https://${env.DOMAIN}`,
+    initialBuyAmount: INITIAL_BUY_AMOUNT,
   });
 
   return {
     tokenAddress: result.tokenAddress,
     tx: result.transactionHash,
   };
+}
+
+/**
+ * Distribute initial tokens: 50/50 split between creator and platform.
+ * Designed to run in background via waitUntil() — NOT blocking the response.
+ */
+export async function distributeInitialTokens(
+  tokenAddress: string,
+  creatorWallet: string,
+  env: Env,
+): Promise<void> {
+  try {
+    const sdk = getSDK(env);
+
+    const workerBalance = await sdk.getBalance(
+      tokenAddress as Address,
+      sdk.account.address,
+    );
+
+    if (workerBalance === 0n) {
+      console.log(`[distribute] No tokens to distribute for ${tokenAddress}`);
+      return;
+    }
+
+    const creatorShare = workerBalance / 2n;
+    if (creatorShare > 0n) {
+      await sdk.transfer(
+        tokenAddress as Address,
+        creatorWallet as Address,
+        creatorShare,
+      );
+      console.log(`[distribute] Sent ${formatEther(creatorShare)} tokens to ${creatorWallet}, kept ${formatEther(workerBalance - creatorShare)} for platform`);
+    }
+  } catch (e: any) {
+    console.log(`[distribute] Failed for ${tokenAddress}: ${e.message}`);
+  }
 }
 
 // ════════════════════════════════════════════

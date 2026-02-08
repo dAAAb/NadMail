@@ -662,7 +662,7 @@ function RegisterEmail({
             <div className="bg-nad-dark rounded-lg p-4 mb-4 border border-gray-700 text-center">
               <p className="text-gray-400 mb-2">All legendary names have been claimed!</p>
               <p className="text-gray-500 text-sm">
-                You'll get <span className="text-gray-300 font-mono">{auth.wallet.slice(0, 10).toLowerCase()}@nadmail.ai</span>
+                You'll get <span className="text-gray-300 font-mono">{auth.wallet.toLowerCase().slice(0, 10)}@nadmail.ai</span>
               </p>
             </div>
 
@@ -896,7 +896,7 @@ function BuyCreditsModal({
       .then((data) => setCredits(data.credits || 0));
   }, [auth.token]);
 
-  const creditsForAmount = Math.floor(parseFloat(amount || '0') * 10_000);
+  const creditsForAmount = Math.floor(parseFloat(amount || '0') * 7);
 
   async function handleWalletPay() {
     setStatus('paying');
@@ -1016,7 +1016,7 @@ function BuyCreditsModal({
               <>
                 <div className="text-sm text-gray-400 mb-4 space-y-1">
                   <p>1 credit = 1 external email</p>
-                  <p>1 MON = 10,000 credits (min: 0.1 MON)</p>
+                  <p>1 MON = 7 credits (min: 1 MON)</p>
                   {monBal && <p className="text-gray-500">Balance: {parseFloat(formatUnits(monBal.value, 18)).toFixed(4)} MON</p>}
                 </div>
 
@@ -1087,9 +1087,9 @@ function BuyCreditsModal({
                   <div className="text-gray-400">{`{ "tx_hash": "0x..." }`}</div>
                   <div className="text-gray-500 mt-2"># Pricing:</div>
                   <div className="text-gray-400">
-                    1 MON = 10,000 credits<br />
-                    Min: 0.1 MON = 1,000 credits<br />
-                    1 credit = 1 external email
+                    1 MON = 7 credits<br />
+                    Min: 1 MON = 7 credits<br />
+                    1 credit = 1 external email (~$0.003)
                   </div>
                 </div>
                 <CopyButton text={DEPOSIT_ADDRESS} label="Copy deposit address" />

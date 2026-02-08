@@ -162,7 +162,7 @@ proRoutes.post('/buy', async (c) => {
   let bonusCredits = 0;
   const overpayment = tx.value - PRO_PRICE_WEI;
   if (overpayment > 0n) {
-    bonusCredits = Number((overpayment * 10_000n) / BigInt(1e18));
+    bonusCredits = Number((overpayment * 7n) / BigInt(1e18));
     if (bonusCredits > 0) {
       await c.env.DB.prepare(
         'UPDATE accounts SET credits = credits + ? WHERE handle = ?'

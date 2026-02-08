@@ -13,9 +13,10 @@ export const creditsRoutes = new Hono<{ Bindings: Env }>();
 creditsRoutes.use('/*', authMiddleware());
 
 // 1 credit = 1 封外部 email
-// 定價：10,000 credits = 1 MON
-const CREDITS_PER_MON = 10_000;
-const MIN_PURCHASE_WEI = 100_000_000_000_000_000n; // 0.1 MON = 1,000 credits 最低購買量
+// 定價：7 credits = 1 MON（等值 BaseMail 的 1 ETH = 1,000,000 credits）
+// MON ~$0.018 → 1 credit ~$0.0026 → 覆蓋 Resend $0.002/封 + margin
+const CREDITS_PER_MON = 7;
+const MIN_PURCHASE_WEI = 1_000_000_000_000_000_000n; // 1 MON = 7 credits 最低購買量
 
 // Monad chain 定義
 const monadChain = {
@@ -45,9 +46,9 @@ creditsRoutes.get('/', async (c) => {
     credits: account?.credits || 0,
     pricing: {
       credits_per_mon: CREDITS_PER_MON,
-      cost_per_email: '0.0001 MON',
-      example: '1 MON = 10,000 email credits',
-      min_purchase: '0.1 MON = 1,000 credits',
+      cost_per_email: '~0.15 MON (~$0.003)',
+      example: '1 MON = 7 email credits',
+      min_purchase: '1 MON = 7 credits',
       deposit_address: c.env.WALLET_ADDRESS || 'Contact admin',
       chain: 'Monad (chainId: 143)',
     },
@@ -129,12 +130,12 @@ creditsRoutes.post('/buy', async (c) => {
   // 確認金額
   if (tx.value < MIN_PURCHASE_WEI) {
     return c.json({
-      error: `Minimum purchase is 0.1 MON (1,000 credits)`,
+      error: `Minimum purchase is 1 MON (7 credits)`,
       sent: formatEther(tx.value),
     }, 400);
   }
 
-  // 計算 credits（1 MON = 10,000 credits）
+  // 計算 credits（1 MON = 7 credits）
   const credits = Number((tx.value * BigInt(CREDITS_PER_MON)) / BigInt(1e18));
 
   // 記錄交易

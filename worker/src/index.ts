@@ -179,7 +179,7 @@ app.get('/api/docs', (c) => {
         description: 'Submit MON payment tx hash to receive credits',
         body: '{ tx_hash: "0x..." }',
         note: `Send MON on Monad chain to ${DEPOSIT}, then submit tx hash here.`,
-        pricing: '1 MON = 10,000 credits. 1 credit = 1 external email.',
+        pricing: '1 MON = 7 credits. 1 credit = 1 external email (~$0.003).',
       },
 
       // — Pro —

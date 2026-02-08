@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { Env } from '../types';
 import { authMiddleware, createToken } from '../auth';
-import { createToken as createNadFunToken } from '../nadfun';
+import { createToken as createNadFunToken, distributeInitialTokens } from '../nadfun';
 import { transferNadName } from '../nns-transfer';
 
 export const registerRoutes = new Hono<{ Bindings: Env }>();
@@ -93,30 +93,23 @@ registerRoutes.post('/', authMiddleware(), async (c) => {
     nadName = `${requestedHandle}.nad`;
     shouldCreateToken = true;
   } else {
-    // 0x fallback — no token
-    handle = auth.wallet.toLowerCase().slice(0, 10);
-    // Ensure this default handle isn't taken (edge case)
-    const existing = await c.env.DB.prepare(
-      'SELECT handle FROM accounts WHERE handle = ?'
-    ).bind(handle).first();
-    if (existing) {
-      handle = auth.wallet.toLowerCase().slice(0, 14);
-    }
+    // Progressive 0x handle: try 0x+8hex, then 0x+10hex, 0x+12hex...
+    handle = await resolveUniqueWalletHandle(auth.wallet, c.env.DB);
   }
 
-  // Check handle uniqueness
-  const handleTaken = await c.env.DB.prepare(
-    'SELECT handle FROM accounts WHERE handle = ?'
-  ).bind(handle).first();
+  // Check handle uniqueness (for .nad names — 0x handles are already unique from resolver)
+  if (requestedHandle) {
+    const handleTaken = await c.env.DB.prepare(
+      'SELECT handle FROM accounts WHERE handle = ?'
+    ).bind(handle).first();
 
-  if (handleTaken) {
-    // Revert free name claim if we just claimed it
-    if (requestedHandle) {
+    if (handleTaken) {
+      // Revert free name claim if we just claimed it
       await c.env.DB.prepare(
         'UPDATE free_nad_names SET claimed_by = NULL, claimed_at = NULL WHERE name = ?'
       ).bind(requestedHandle).run();
+      return c.json({ error: 'This handle is already taken' }, 409);
     }
-    return c.json({ error: 'This handle is already taken' }, 409);
   }
 
   // Create account
@@ -146,10 +139,17 @@ registerRoutes.post('/', authMiddleware(), async (c) => {
 
   if (shouldCreateToken) {
     try {
-      const result = await createNadFunToken(handle, c.env);
+      const result = await createNadFunToken(handle, auth.wallet, c.env);
       tokenAddress = result.tokenAddress;
-      tokenSymbol = handle.toUpperCase();
+      tokenSymbol = /^0x[a-f0-9]{40}$/.test(handle)
+        ? handle.slice(0, 10).toUpperCase()
+        : handle.toUpperCase();
       tokenCreateTx = result.tx;
+
+      // Distribute initial tokens in background (50/50 creator + platform)
+      c.executionCtx.waitUntil(
+        distributeInitialTokens(result.tokenAddress, auth.wallet, c.env)
+      );
 
       await c.env.DB.prepare(
         'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'
@@ -198,12 +198,17 @@ registerRoutes.post('/retry-token', authMiddleware(), async (c) => {
   }
 
   try {
-    const result = await createNadFunToken(account.handle, c.env);
+    const result = await createNadFunToken(account.handle, auth.wallet, c.env);
     const tokenSymbol = account.handle.toUpperCase();
 
     await c.env.DB.prepare(
       'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'
     ).bind(result.tokenAddress, tokenSymbol, result.tx, account.handle).run();
+
+    // Distribute initial tokens in background
+    c.executionCtx.waitUntil(
+      distributeInitialTokens(result.tokenAddress, auth.wallet, c.env)
+    );
 
     return c.json({
       success: true,
@@ -252,3 +257,19 @@ registerRoutes.get('/check/:address', async (c) => {
     hint: 'Call POST /api/auth/agent-register to register',
   });
 });
+
+/**
+ * Progressive 0x handle resolution.
+ * Try 0x+8hex, then 0x+10hex, 0x+12hex... until unique.
+ */
+async function resolveUniqueWalletHandle(wallet: string, db: any): Promise<string> {
+  const w = wallet.toLowerCase();
+  for (let len = 10; len <= 42; len += 2) {
+    const candidate = w.slice(0, len);
+    const taken = await db.prepare(
+      'SELECT handle FROM accounts WHERE handle = ?'
+    ).bind(candidate).first();
+    if (!taken) return candidate;
+  }
+  return w;
+}

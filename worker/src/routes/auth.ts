@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { Env } from '../types';
 import { generateNonce, verifySiwe, createToken, buildSiweMessage } from '../auth';
-import { createToken as createNadFunToken } from '../nadfun';
+import { createToken as createNadFunToken, distributeInitialTokens } from '../nadfun';
 
 const SIWE_ERROR_MESSAGES: Record<string, string> = {
   no_nonce_in_message: 'SIWE message is malformed — no nonce found. Use the exact message returned by POST /api/auth/start.',
@@ -82,19 +82,22 @@ authRoutes.post('/agent-register', async (c) => {
   }
 
   // Not registered — auto-register
-  const handle = requestedHandle?.toLowerCase() || wallet.slice(0, 10);
+  let handle: string;
 
-  if (requestedHandle && !isValidHandle(handle)) {
-    return c.json({ error: 'Invalid handle format (3-20 chars, a-z, 0-9, _ only)' }, 400);
-  }
-
-  // Check if handle is taken
-  const handleTaken = await c.env.DB.prepare(
-    'SELECT handle FROM accounts WHERE handle = ?'
-  ).bind(handle).first();
-
-  if (handleTaken) {
-    return c.json({ error: 'This handle is already taken' }, 409);
+  if (requestedHandle) {
+    handle = requestedHandle.toLowerCase();
+    if (!isValidHandle(handle)) {
+      return c.json({ error: 'Invalid handle format (3-20 chars, a-z, 0-9, _ only)' }, 400);
+    }
+    const handleTaken = await c.env.DB.prepare(
+      'SELECT handle FROM accounts WHERE handle = ?'
+    ).bind(handle).first();
+    if (handleTaken) {
+      return c.json({ error: 'This handle is already taken' }, 409);
+    }
+  } else {
+    // Progressive 0x handle: try 0x+8hex, then 0x+10hex, 0x+12hex...
+    handle = await resolveUniqueWalletHandle(wallet, c.env.DB);
   }
 
   // Create account
@@ -117,13 +120,20 @@ authRoutes.post('/agent-register', async (c) => {
   let tokenSymbol: string | null = null;
 
   try {
-    const tokenResult = await createNadFunToken(handle, c.env);
+    const tokenResult = await createNadFunToken(handle, wallet, c.env);
     tokenAddress = tokenResult.tokenAddress;
-    tokenSymbol = handle.toUpperCase();
+    tokenSymbol = /^0x[a-f0-9]{40}$/.test(handle)
+      ? handle.slice(0, 10).toUpperCase()
+      : handle.toUpperCase();
 
     await c.env.DB.prepare(
       'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'
     ).bind(tokenAddress, tokenSymbol, tokenResult.tx, handle).run();
+
+    // Distribute initial tokens in background (50/50 creator + platform)
+    c.executionCtx.waitUntil(
+      distributeInitialTokens(tokenResult.tokenAddress, wallet, c.env)
+    );
   } catch (e: any) {
     console.log(`[agent-register] Token creation failed for ${handle}: ${e.message}`);
   }
@@ -221,4 +231,23 @@ authRoutes.post('/verify', async (c) => {
 function isValidHandle(handle: string): boolean {
   if (handle.length < 3 || handle.length > 20) return false;
   return /^[a-z0-9][a-z0-9_]*[a-z0-9]$/.test(handle) || (handle.length === 3 && /^[a-z0-9]{3}$/.test(handle));
+}
+
+/**
+ * Progressive 0x handle resolution.
+ * Try 0x+8hex, then 0x+10hex, 0x+12hex... until unique.
+ * Token name = handle@nadmail.ai (always ≤ 32 chars since handle ≤ 21 chars)
+ */
+async function resolveUniqueWalletHandle(wallet: string, db: any): Promise<string> {
+  const w = wallet.toLowerCase();
+  // Start at 10 chars (0x + 8 hex), step by 2 hex chars
+  for (let len = 10; len <= 42; len += 2) {
+    const candidate = w.slice(0, len);
+    const taken = await db.prepare(
+      'SELECT handle FROM accounts WHERE handle = ?'
+    ).bind(candidate).first();
+    if (!taken) return candidate;
+  }
+  // Full address as ultimate fallback (guaranteed unique by wallet UNIQUE constraint)
+  return w;
 }
