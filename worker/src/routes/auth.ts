@@ -68,14 +68,37 @@ authRoutes.post('/agent-register', async (c) => {
   ).bind(wallet).first<{ handle: string; token_address: string | null; token_symbol: string | null; tier: string }>();
 
   if (existingAccount) {
+    let { token_address, token_symbol } = existingAccount;
+
+    // Retry token creation if previous attempt failed
+    if (!token_address) {
+      try {
+        const tokenResult = await createNadFunToken(existingAccount.handle, wallet, c.env);
+        token_address = tokenResult.tokenAddress;
+        // nad.fun enforces max 10 chars for symbol
+        token_symbol = existingAccount.handle.slice(0, 10).toUpperCase();
+
+        await c.env.DB.prepare(
+          'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'
+        ).bind(token_address, token_symbol, tokenResult.tx, existingAccount.handle).run();
+
+        c.executionCtx.waitUntil(
+          distributeInitialTokens(tokenResult.tokenAddress, wallet, c.env)
+        );
+        console.log(`[agent-register] Token retry succeeded for ${existingAccount.handle}: ${token_address}`);
+      } catch (e: any) {
+        console.log(`[agent-register] Token retry failed for ${existingAccount.handle}: ${e.message}`);
+      }
+    }
+
     const token = await createToken({ wallet, handle: existingAccount.handle }, secret);
     return c.json({
       token,
       email: `${existingAccount.handle}@${c.env.DOMAIN}`,
       handle: existingAccount.handle,
       wallet,
-      token_address: existingAccount.token_address,
-      token_symbol: existingAccount.token_symbol,
+      token_address,
+      token_symbol,
       tier: existingAccount.tier || 'free',
       registered: true,
       new_account: false,
