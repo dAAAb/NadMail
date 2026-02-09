@@ -42,14 +42,17 @@ sendRoutes.post('/', async (c) => {
     return c.json({ error: 'No email registered for this wallet' }, 403);
   }
 
-  const { to, subject, body, html, in_reply_to, attachments } = await c.req.json<{
-    to: string;
-    subject: string;
-    body: string;
-    html?: string;
-    in_reply_to?: string;
-    attachments?: Attachment[];
-  }>();
+  let parsed: { to: string; subject: string; body: string; html?: string; in_reply_to?: string; attachments?: Attachment[] };
+  try {
+    parsed = await c.req.json();
+  } catch (e: any) {
+    return c.json({
+      error: 'Invalid JSON in request body',
+      hint: 'Ensure special characters in body/subject are properly escaped (e.g. use \\n for newlines, not raw control chars)',
+      detail: e.message,
+    }, 400);
+  }
+  const { to, subject, body, html, in_reply_to, attachments } = parsed;
 
   if (!to || !subject || !body) {
     return c.json({ error: 'to, subject, and body are required' }, 400);
