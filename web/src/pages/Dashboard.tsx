@@ -903,7 +903,7 @@ function BuyCreditsModal({
     setError('');
     try {
       const payAmount = parseEther(amount);
-      await switchChainAsync({ chainId: MONAD_CHAIN_ID });
+      try { await switchChainAsync({ chainId: MONAD_CHAIN_ID }); } catch {}
 
       const hash = await sendTransactionAsync({
         to: DEPOSIT_ADDRESS as `0x${string}`,
@@ -1457,7 +1457,7 @@ function Settings({ auth, setAuth }: { auth: AuthState; setAuth: (a: AuthState) 
                     setProStatus('paying');
                     setProError('');
                     try {
-                      await switchChainAsync({ chainId: MONAD_CHAIN_ID });
+                      try { await switchChainAsync({ chainId: MONAD_CHAIN_ID }); } catch {}
                       const hash = await sendTransactionAsync({
                         to: DEPOSIT_ADDRESS as `0x${string}`,
                         value: parseEther('1'),

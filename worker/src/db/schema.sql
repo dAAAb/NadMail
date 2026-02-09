@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     token_create_tx TEXT,
     webhook_url     TEXT,
     created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
-    tier            TEXT NOT NULL DEFAULT 'free'
+    tier            TEXT NOT NULL DEFAULT 'free',
+    credits         INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_accounts_wallet ON accounts(wallet);
@@ -40,6 +41,18 @@ CREATE TABLE IF NOT EXISTS daily_email_counts (
     date    TEXT NOT NULL,
     count   INTEGER DEFAULT 0,
     PRIMARY KEY (handle, date)
+);
+
+-- Credit 交易紀錄（外部 email 付費）
+CREATE TABLE IF NOT EXISTS credit_transactions (
+    id          TEXT PRIMARY KEY,
+    handle      TEXT NOT NULL,
+    type        TEXT NOT NULL DEFAULT 'purchase',
+    amount      INTEGER NOT NULL,
+    tx_hash     TEXT UNIQUE,
+    price_wei   TEXT,
+    created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+    FOREIGN KEY (handle) REFERENCES accounts(handle)
 );
 
 -- 免費 .nad 名稱贈送池
