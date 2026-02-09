@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:migrate": "wrangler d1 execute basemail-db --file=src/db/schema.sql",
-    "db:migrate:local": "wrangler d1 execute basemail-db --file=src/db/schema.sql --local"
+    "db:migrate": "wrangler d1 execute nadmail-db --file=src/db/schema.sql",
+    "db:migrate:local": "wrangler d1 execute nadmail-db --file=src/db/schema.sql --local"
   },
   "dependencies": {
     "@nadfun/sdk": "^0.4.3",
