@@ -19,6 +19,9 @@ export interface Env {
   RESEND_API_KEY?: string;       // Resend.com API Key，用於外部寄信
   WALLET_ADDRESS?: string;       // Worker 錢包公開地址，用於收取 credit 購買費用
 
+  // Admin
+  ADMIN_SECRET?: string;         // Admin API secret for /api/admin/* endpoints
+
   // $DIPLOMAT agent
   ANTHROPIC_API_KEY?: string;    // Claude API key
   MOLTBOOK_API_KEY?: string;     // Moltbook agent API key

@@ -16,6 +16,7 @@ export const sendRoutes = new Hono<{ Bindings: Env }>();
 sendRoutes.use('/*', authMiddleware());
 
 const DAILY_EMAIL_LIMIT = 10;
+const ADMIN_HANDLES = ['diplomat', 'nadmail'];
 const EMO_BUY_MAX = 0.1;           // Max emo-buy per transaction (MON)
 const EMO_BUY_DAILY_LIMIT = 0.5;   // Max total emo-buy per user per day (MON)
 const BASE_MICRO_BUY = parseEther('0.001');
@@ -122,19 +123,23 @@ sendRoutes.post('/', async (c) => {
       return c.json({ error: `Recipient not found: ${to}` }, 404);
     }
 
-    // Check daily email limit
+    // Check daily email limit (admin handles exempt)
     const today = new Date().toISOString().split('T')[0];
-    const dailyCount = await c.env.DB.prepare(
-      'SELECT count FROM daily_email_counts WHERE handle = ? AND date = ?'
-    ).bind(auth.handle, today).first<{ count: number }>();
+    const isAdmin = ADMIN_HANDLES.includes(auth.handle!);
 
-    if (dailyCount && dailyCount.count >= DAILY_EMAIL_LIMIT) {
-      return c.json({
-        error: `Daily email limit reached (${DAILY_EMAIL_LIMIT}/day)`,
-        limit: DAILY_EMAIL_LIMIT,
-        used: dailyCount.count,
-        resets: 'midnight UTC',
-      }, 429);
+    if (!isAdmin) {
+      const dailyCount = await c.env.DB.prepare(
+        'SELECT count FROM daily_email_counts WHERE handle = ? AND date = ?'
+      ).bind(auth.handle, today).first<{ count: number }>();
+
+      if (dailyCount && dailyCount.count >= DAILY_EMAIL_LIMIT) {
+        return c.json({
+          error: `Daily email limit reached (${DAILY_EMAIL_LIMIT}/day)`,
+          limit: DAILY_EMAIL_LIMIT,
+          used: dailyCount.count,
+          resets: 'midnight UTC',
+        }, 429);
+      }
     }
 
     // ── Check emo-buy daily limit ──

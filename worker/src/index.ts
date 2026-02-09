@@ -13,6 +13,7 @@ import { identityRoutes } from './routes/identity';
 import { creditsRoutes } from './routes/credits';
 import { proRoutes } from './routes/pro';
 import { agentRoutes } from './routes/agent';
+import { adminRoutes } from './routes/admin';
 import { handleIncomingEmail } from './email-handler';
 import { runDiplomatCycle } from './diplomat';
 
@@ -210,6 +211,15 @@ app.get('/api/docs', (c) => {
         response: '{ success, tier: "pro", benefits }',
       },
 
+      // — Admin —
+      'POST /api/admin/send': {
+        auth: 'Bearer ADMIN_SECRET',
+        description: 'Send email as admin account (diplomat or nadmail). 100/day limit.',
+        body: '{ from_handle: "diplomat"|"nadmail", to, subject, body, emo_amount? }',
+        response: '{ success, email_id, from, to, microbuy? }',
+        note: 'Internal @nadmail.ai recipients only. Admin handles are exempt from normal daily limits.',
+      },
+
       // — Public —
       'GET /api/identity/:handle': {
         description: 'Look up email + token for any handle (public)',
@@ -242,6 +252,7 @@ app.route('/api/identity', identityRoutes);
 app.route('/api/credits', creditsRoutes);
 app.route('/api/pro', proRoutes);
 app.route('/api/agent', agentRoutes);
+app.route('/api/admin', adminRoutes);
 
 // 匯出 fetch handler (HTTP), email handler (incoming mail), scheduled handler (cron)
 export default {
