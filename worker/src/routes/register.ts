@@ -1,9 +1,50 @@
 import { Hono } from 'hono';
+import { createPublicClient, http, formatEther } from 'viem';
 import { Env } from '../types';
 import { authMiddleware, createToken } from '../auth';
 import { createToken as createNadFunToken, distributeInitialTokens } from '../nadfun';
 import { transferNadName } from '../nns-transfer';
 import { getNadNamesForWallet } from '../nns-lookup';
+
+const PRICE_ORACLE_V2 = '0xdF0e18bb6d8c5385d285C3c67919E99c0dce020d' as const;
+const NNS_REGISTRAR = '0xE18a7550AA35895c87A1069d1B775Fa275Bc93Fb' as const;
+
+const priceOracleAbi = [
+  {
+    inputs: [
+      { name: 'name', type: 'string' },
+      { name: 'token', type: 'address' },
+    ],
+    name: 'getRegisteringPriceInToken',
+    outputs: [{
+      components: [
+        { name: 'base', type: 'uint256' },
+        { name: 'token', type: 'address' },
+        { name: 'decimals', type: 'uint8' },
+      ],
+      type: 'tuple',
+    }],
+    stateMutability: 'view' as const,
+    type: 'function' as const,
+  },
+] as const;
+
+const registrarAbi = [
+  {
+    inputs: [{ name: 'name', type: 'string' }],
+    name: 'available',
+    outputs: [{ name: '', type: 'bool' }],
+    stateMutability: 'view' as const,
+    type: 'function' as const,
+  },
+] as const;
+
+const monad = {
+  id: 143,
+  name: 'Monad',
+  nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
+  rpcUrls: { default: { http: ['https://monad-mainnet.drpc.org'] } },
+} as const;
 
 export const registerRoutes = new Hono<{ Bindings: Env }>();
 
@@ -432,6 +473,18 @@ registerRoutes.get('/check/:address', async (c) => {
   ).bind(wallet).first<{ handle: string; token_address: string | null; token_symbol: string | null; nad_name: string | null }>();
 
   if (existing) {
+    // For registered 0x handle users, check if they have .nad names available
+    let upgrade_available = false;
+    let owned_nad_names: string[] = [];
+
+    if (/^0x/i.test(existing.handle)) {
+      try {
+        const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org');
+        owned_nad_names = names.map(n => n.toLowerCase());
+        upgrade_available = owned_nad_names.length > 0;
+      } catch { /* non-critical */ }
+    }
+
     return c.json({
       wallet,
       handle: existing.handle,
@@ -440,16 +493,107 @@ registerRoutes.get('/check/:address', async (c) => {
       nad_name: existing.nad_name,
       token_address: existing.token_address,
       token_symbol: existing.token_symbol,
+      upgrade_available,
+      owned_nad_names: upgrade_available ? owned_nad_names : undefined,
     });
   }
+
+  // Not registered — check on-chain for .nad names
+  let owned_nad_names: string[] = [];
+  try {
+    const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org');
+    owned_nad_names = names.map(n => n.toLowerCase());
+  } catch { /* non-critical */ }
 
   return c.json({
     wallet,
     handle: null,
     email: null,
     registered: false,
-    hint: 'Call POST /api/auth/agent-register to register',
+    owned_nad_names,
+    has_nad_name: owned_nad_names.length > 0,
+    hint: owned_nad_names.length > 0
+      ? `You own ${owned_nad_names[0]}.nad! Register with POST /api/auth/agent-register { "handle": "${owned_nad_names[0]}" }`
+      : 'Call POST /api/auth/agent-register to register',
   });
+});
+
+/**
+ * GET /api/register/nad-name-price/:name
+ * Public — query NNS PriceOracleV2 for real-time .nad name pricing.
+ */
+registerRoutes.get('/nad-name-price/:name', async (c) => {
+  const name = c.req.param('name').toLowerCase().replace(/\.nad$/, '');
+
+  if (!name || name.length < 3 || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) {
+    return c.json({ error: 'Invalid .nad name (3+ chars, alphanumeric + hyphens)' }, 400);
+  }
+
+  const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+  const client = createPublicClient({
+    chain: monad,
+    transport: http(rpcUrl),
+  });
+
+  try {
+    // Check availability + get price in parallel
+    const [isAvailable, priceResult] = await Promise.all([
+      client.readContract({
+        address: NNS_REGISTRAR,
+        abi: registrarAbi,
+        functionName: 'available',
+        args: [name],
+      }),
+      client.readContract({
+        address: PRICE_ORACLE_V2,
+        abi: priceOracleAbi,
+        functionName: 'getRegisteringPriceInToken',
+        args: [name, '0x0000000000000000000000000000000000000000'],
+      }),
+    ]);
+
+    const basePriceWei = priceResult.base;
+    const priceMon = parseFloat(formatEther(basePriceWei));
+    const CONVENIENCE_FEE = 0.15; // 15%
+
+    // Also check if already registered in NadMail
+    const nadmailTaken = await c.env.DB.prepare(
+      'SELECT handle FROM accounts WHERE handle = ?'
+    ).bind(name).first();
+
+    return c.json({
+      name,
+      nad_name: `${name}.nad`,
+      available_nns: isAvailable,
+      available_nadmail: !nadmailTaken,
+      price_mon: priceMon,
+      price_wei: basePriceWei.toString(),
+      proxy_buy: {
+        fee_percent: CONVENIENCE_FEE * 100,
+        total_mon: Math.ceil(priceMon * (1 + CONVENIENCE_FEE) * 100) / 100,
+        note: 'Proxy purchase coming soon. For now, buy directly at https://app.nad.domains/',
+      },
+      buy_direct_url: `https://app.nad.domains/`,
+      pricing_reference: {
+        '5+ chars': '~691 MON',
+        '4 chars': '~1,726 MON',
+        '3 chars': '~5,694 MON',
+      },
+    });
+  } catch (e: any) {
+    console.log(`[nad-name-price] Query failed for ${name}: ${e.message}`);
+    return c.json({
+      name,
+      nad_name: `${name}.nad`,
+      error: 'Failed to query NNS pricing contract',
+      buy_direct_url: 'https://app.nad.domains/',
+      pricing_reference: {
+        '5+ chars': '~691 MON',
+        '4 chars': '~1,726 MON',
+        '3 chars': '~5,694 MON',
+      },
+    }, 500);
+  }
 });
 
 /**

@@ -126,13 +126,14 @@ app.get('/api/docs', (c) => {
       'POST /api/auth/agent-register': {
         description: 'Verify signature + auto-register + create meme coin in one call',
         body: '{ address: "0x...", signature: "0x...", message: "...", handle?: "alice" }',
-        response: '{ token, email, handle, wallet, token_address, token_symbol, registered }',
-        note: 'If handle is not provided, defaults to abbreviated wallet address.',
+        response: '{ token, email, handle, wallet, token_address, token_symbol, registered, upgrade_available?, owned_nad_names?, guidance? }',
+        note: 'If handle is not provided, defaults to abbreviated wallet address. For 0x users: includes upgrade_available flag, owned_nad_names list, and guidance object with next steps.',
       },
       'POST /api/auth/verify': {
         description: 'Verify SIWE signature (existing users)',
         body: '{ address, signature, message }',
-        response: '{ token, wallet, registered, handle }',
+        response: '{ token, wallet, registered, handle, upgrade_available?, owned_nad_names?, upgrade_hint? }',
+        note: 'For registered 0x users with .nad names, upgrade_available=true and owned_nad_names lists available names.',
       },
 
       // — Registration —
@@ -156,8 +157,14 @@ app.get('/api/docs', (c) => {
         note: 'Requires on-chain .nad name ownership. Creates meme coin if none exists. Issues new JWT.',
       },
       'GET /api/register/check/:address': {
-        description: 'Preview what email a wallet would get (public, no auth)',
-        response: '{ wallet, handle, email, registered }',
+        description: 'Preview what email a wallet would get + detect .nad names (public, no auth)',
+        response: '{ wallet, handle, email, registered, owned_nad_names?, has_nad_name?, upgrade_available? }',
+        note: 'Includes on-chain NNS detection. For unregistered wallets: owned_nad_names lists any .nad names. For registered 0x users: upgrade_available indicates upgrade possibility.',
+      },
+      'GET /api/register/nad-name-price/:name': {
+        description: 'Query real-time .nad name pricing from NNS PriceOracleV2 (public)',
+        response: '{ name, available_nns, available_nadmail, price_mon, price_wei, proxy_buy, pricing_reference }',
+        note: 'Returns availability on NNS + NadMail, MON price, and reference pricing table.',
       },
 
       // — Email (token required) —

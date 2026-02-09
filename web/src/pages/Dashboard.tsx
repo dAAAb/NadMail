@@ -209,16 +209,20 @@ interface NadNameInfo {
 function UpgradeBanner({
   auth,
   setAuth,
+  claimName,
 }: {
   auth: AuthState;
   setAuth: (a: AuthState) => void;
+  claimName?: string | null;
 }) {
   const [nadNames, setNadNames] = useState<NadNameInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [upgrading, setUpgrading] = useState(false);
   const [error, setError] = useState('');
-  const [dismissed, setDismissed] = useState(() => sessionStorage.getItem('nadmail_upgrade_dismissed') === 'true');
+  const [dismissed, setDismissed] = useState(() =>
+    claimName ? false : sessionStorage.getItem('nadmail_upgrade_dismissed') === 'true'
+  );
   const [success, setSuccess] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
 
@@ -232,11 +236,18 @@ function UpgradeBanner({
       .then((data) => {
         const available = (data.names || []).filter((n: NadNameInfo) => n.available);
         setNadNames(available);
-        if (available.length === 1) setSelectedName(available[0].name);
+        // Auto-select from ?claim= param or single available name
+        if (claimName) {
+          const match = available.find((n: NadNameInfo) => n.name === claimName);
+          if (match) setSelectedName(match.name);
+          else if (available.length === 1) setSelectedName(available[0].name);
+        } else if (available.length === 1) {
+          setSelectedName(available[0].name);
+        }
       })
       .catch(() => setNadNames([]))
       .finally(() => setLoading(false));
-  }, [auth.wallet, auth.handle, dismissed]);
+  }, [auth.wallet, auth.handle, dismissed, claimName]);
 
   if (loading || dismissed || !auth.handle?.startsWith('0x') || nadNames.length === 0) {
     return null;
@@ -381,6 +392,8 @@ export default function Dashboard() {
 
   const location = useLocation();
   const { disconnect } = useDisconnect();
+  // Read ?claim= parameter from URL (Landing → Dashboard flow)
+  const claimName = new URLSearchParams(location.search).get('claim') || null;
   // Wallet balance for sidebar display
   const walletAddr = auth?.wallet as `0x${string}` | undefined;
   const { data: monBalance } = useBalance({ address: walletAddr, chainId: MONAD_CHAIN_ID });
@@ -394,6 +407,7 @@ export default function Dashboard() {
       <RegisterEmail
         auth={auth}
         onRegistered={(handle, token) => setAuth({ ...auth, handle, registered: true, token })}
+        claimName={claimName}
       />
     );
   }
@@ -468,7 +482,7 @@ export default function Dashboard() {
       {/* Main content */}
       <main className="flex-1 p-8 overflow-y-auto">
         {auth.handle?.startsWith('0x') && (
-          <UpgradeBanner auth={auth} setAuth={setAuth} />
+          <UpgradeBanner auth={auth} setAuth={setAuth} claimName={claimName} />
         )}
         <Routes>
           <Route index element={<Inbox auth={auth} folder="inbox" />} />
@@ -630,9 +644,11 @@ interface FreeName {
 function RegisterEmail({
   auth,
   onRegistered,
+  claimName,
 }: {
   auth: AuthState;
   onRegistered: (handle: string, token: string) => void;
+  claimName?: string | null;
 }) {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -647,6 +663,9 @@ function RegisterEmail({
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [nameSource, setNameSource] = useState<'free' | 'owned' | null>(null);
 
+  const walletAddr = auth.wallet as `0x${string}` | undefined;
+  const { data: monBalance } = useBalance({ address: walletAddr, chainId: MONAD_CHAIN_ID });
+
   const shortAddr = auth.wallet ? `${auth.wallet.slice(0, 6)}...${auth.wallet.slice(-4)}` : '';
 
   // Load free names + owned .nad names on mount
@@ -655,11 +674,27 @@ function RegisterEmail({
       fetch(`${API_BASE}/api/register/free-names`).then((r) => r.json()).catch(() => ({ names: [] })),
       fetch(`${API_BASE}/api/register/nad-names/${auth.wallet}`).then((r) => r.json()).catch(() => ({ names: [] })),
     ]).then(([freeData, ownedData]) => {
-      setFreeNames(freeData.names || []);
+      const free = freeData.names || [];
+      setFreeNames(free);
       const available = (ownedData.names || []).filter((n: NadNameInfo) => n.available);
       setOwnedNames(available);
+
+      // Auto-select from ?claim= parameter
+      if (claimName) {
+        const inOwned = available.find((n: NadNameInfo) => n.name === claimName);
+        if (inOwned) {
+          setSelectedName(inOwned.name);
+          setNameSource('owned');
+        } else {
+          const inFree = free.find((n: { name: string; available: boolean }) => n.name === claimName && n.available);
+          if (inFree) {
+            setSelectedName(inFree.name);
+            setNameSource('free');
+          }
+        }
+      }
     }).finally(() => setLoadingNames(false));
-  }, [auth.wallet]);
+  }, [auth.wallet, claimName]);
 
   async function handleRegister(handle?: string) {
     setSubmitting(true);
@@ -880,22 +915,51 @@ function RegisterEmail({
         ) : (
           <>
             {/* No free names + no owned names — guide to buy */}
-            <div className="bg-nad-dark rounded-lg p-6 mb-4 border border-gray-700 text-center">
-              <p className="text-gray-400 mb-2">All free names have been claimed!</p>
-              <p className="text-gray-500 text-sm mb-4">
+            <div className="bg-nad-dark rounded-lg p-6 mb-4 border border-gray-700">
+              <p className="text-gray-400 mb-2 text-center">All free names have been claimed!</p>
+              <p className="text-gray-500 text-sm mb-4 text-center">
                 Get your own .nad name to unlock a memorable email + meme coin.
               </p>
-              <a
-                href="https://nad.domains"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-block bg-purple-800/50 text-purple-300 px-6 py-2 rounded-lg hover:bg-purple-800/70 transition text-sm font-medium border border-purple-700/50"
-              >
-                Buy a .nad name &rarr;
-              </a>
-              <p className="text-gray-600 text-xs mt-3">
-                After buying, come back and refresh this page to use your name.
-              </p>
+
+              {/* Pricing reference */}
+              <div className="bg-gray-800/50 rounded-lg p-3 mb-4">
+                <p className="text-gray-500 text-xs font-medium mb-2 uppercase tracking-wide">.nad Name Pricing</p>
+                <div className="space-y-1.5 text-sm">
+                  <div className="flex justify-between"><span className="text-gray-400">5+ characters</span><span className="text-gray-300 font-mono">~691 MON</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">4 characters</span><span className="text-gray-300 font-mono">~1,726 MON</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">3 characters</span><span className="text-gray-300 font-mono">~5,694 MON</span></div>
+                </div>
+              </div>
+
+              {/* MON Balance */}
+              {monBalance && (
+                <div className={`rounded-lg p-3 mb-4 text-sm text-center ${
+                  parseFloat(formatUnits(monBalance.value, monBalance.decimals)) >= 691
+                    ? 'bg-green-900/20 border border-green-800 text-green-400'
+                    : 'bg-gray-800/50 text-gray-400'
+                }`}>
+                  Your balance: <span className="font-mono font-medium">
+                    {parseFloat(formatUnits(monBalance.value, monBalance.decimals)).toFixed(2)} MON
+                  </span>
+                  {parseFloat(formatUnits(monBalance.value, monBalance.decimals)) >= 691 && (
+                    <span className="ml-1 text-green-300">— Enough for a 5+ char name!</span>
+                  )}
+                </div>
+              )}
+
+              <div className="text-center">
+                <a
+                  href="https://app.nad.domains"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-block bg-purple-800/50 text-purple-300 px-6 py-2 rounded-lg hover:bg-purple-800/70 transition text-sm font-medium border border-purple-700/50"
+                >
+                  Buy a .nad name &rarr;
+                </a>
+                <p className="text-gray-600 text-xs mt-3">
+                  After buying, come back and refresh this page to use your name.
+                </p>
+              </div>
             </div>
 
             <div className="relative my-4">

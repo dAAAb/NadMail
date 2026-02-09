@@ -54,6 +54,9 @@ export default function Landing() {
     registered: boolean;
     token_address?: string | null;
     token_symbol?: string | null;
+    upgrade_available?: boolean;
+    owned_nad_names?: string[];
+    has_nad_name?: boolean;
   }>(null);
   const [checking, setChecking] = useState(false);
 
@@ -181,6 +184,19 @@ export default function Landing() {
                     </span>
                   )}
                 </div>
+                {result.upgrade_available && result.owned_nad_names && result.owned_nad_names.length > 0 && (
+                  <div className="mt-3 bg-purple-900/20 border border-purple-800 rounded-lg p-3">
+                    <p className="text-purple-300 text-xs mb-2">
+                      Upgrade available! This wallet owns: {result.owned_nad_names.map(n => <span key={n} className="font-mono font-medium">{n}.nad</span>).reduce((prev, curr, i) => i === 0 ? [curr] : [...prev, ', ', curr], [] as any)}
+                    </p>
+                    <a
+                      href={`/dashboard?claim=${encodeURIComponent(result.owned_nad_names[0])}`}
+                      className="inline-block bg-nad-purple text-white px-4 py-1.5 rounded text-xs font-medium hover:bg-purple-600 transition"
+                    >
+                      Upgrade to {result.owned_nad_names[0]}.nad
+                    </a>
+                  </div>
+                )}
               </>
             ) : (
               <>
@@ -191,8 +207,13 @@ export default function Landing() {
                 <p className="text-gray-400 text-sm mb-4">
                   Claim this handle to auto-create <span className="text-nad-purple font-mono">${result.handle?.toUpperCase()}</span> token on nad.fun
                 </p>
+                {result.owned_nad_names && result.owned_nad_names.length > 0 && (
+                  <p className="text-purple-400 text-xs mb-3">
+                    This wallet owns: {result.owned_nad_names.map(n => `${n}.nad`).join(', ')}
+                  </p>
+                )}
                 <a
-                  href="/dashboard"
+                  href={`/dashboard${result.handle ? `?claim=${encodeURIComponent(result.handle)}` : ''}`}
                   className="inline-block bg-nad-purple text-white px-6 py-2.5 rounded-lg font-medium hover:bg-purple-600 transition text-sm"
                 >
                   Claim Now

@@ -3,6 +3,7 @@ import { Env } from '../types';
 import { generateNonce, verifySiwe, createToken, buildSiweMessage } from '../auth';
 import { createToken as createNadFunToken, distributeInitialTokens } from '../nadfun';
 import { transferNadName } from '../nns-transfer';
+import { getNadNamesForWallet } from '../nns-lookup';
 
 const SIWE_ERROR_MESSAGES: Record<string, string> = {
   no_nonce_in_message: 'SIWE message is malformed — no nonce found. Use the exact message returned by POST /api/auth/start.',
@@ -91,6 +92,17 @@ authRoutes.post('/agent-register', async (c) => {
       }
     }
 
+    // NNS detection for 0x handle users
+    let upgrade_available = false;
+    let owned_nad_names: string[] = [];
+    if (/^0x/i.test(existingAccount.handle)) {
+      try {
+        const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org');
+        owned_nad_names = names.map(n => n.toLowerCase());
+        upgrade_available = owned_nad_names.length > 0;
+      } catch { /* non-critical */ }
+    }
+
     const token = await createToken({ wallet, handle: existingAccount.handle }, secret);
     return c.json({
       token,
@@ -102,6 +114,11 @@ authRoutes.post('/agent-register', async (c) => {
       tier: existingAccount.tier || 'free',
       registered: true,
       new_account: false,
+      upgrade_available,
+      owned_nad_names: upgrade_available ? owned_nad_names : undefined,
+      upgrade_hint: upgrade_available
+        ? `You own .nad names! Call POST /api/register/upgrade-handle { "new_handle": "${owned_nad_names[0]}" } to upgrade.`
+        : undefined,
     });
   }
 
@@ -109,6 +126,7 @@ authRoutes.post('/agent-register', async (c) => {
   let handle: string;
   let nadName: string | null = null;
   let nftTransferTx: string | null = null;
+  let detectedNadNames: string[] = [];
 
   let claimFreeName = false;
 
@@ -133,6 +151,13 @@ authRoutes.post('/agent-register', async (c) => {
 
     nadName = `${handle}.nad`;
   } else {
+    // Before falling back to 0x, detect owned .nad names for guidance
+    const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+    try {
+      const ownedNames = await getNadNamesForWallet(wallet, rpcUrl);
+      detectedNadNames = ownedNames.map(n => n.toLowerCase());
+    } catch { /* non-critical */ }
+
     // Progressive 0x handle: try 0x+8hex, then 0x+10hex, 0x+12hex...
     handle = await resolveUniqueWalletHandle(wallet, c.env.DB);
   }
@@ -203,6 +228,19 @@ authRoutes.post('/agent-register', async (c) => {
     'SELECT COUNT(*) as count FROM emails WHERE handle = ?'
   ).bind(handle).first<{ count: number }>();
 
+  // Build guidance for 0x handle users
+  const isOxHandle = /^0x/i.test(handle);
+  const guidance = isOxHandle ? {
+    has_nad_name: detectedNadNames.length > 0,
+    owned_nad_names: detectedNadNames.length > 0 ? detectedNadNames : undefined,
+    buy_nad_name_url: 'https://app.nad.domains/',
+    upgrade_endpoint: 'POST /api/register/upgrade-handle',
+    suggested_action: detectedNadNames.length > 0 ? 'upgrade_handle' : 'buy_nad_name',
+    message: detectedNadNames.length > 0
+      ? `You own ${detectedNadNames[0]}.nad! Call POST /api/register/upgrade-handle { "new_handle": "${detectedNadNames[0]}" } to upgrade your email.`
+      : 'Get a .nad name at https://app.nad.domains/ for a memorable email + meme coin. After purchasing, call POST /api/register/upgrade-handle.',
+  } : undefined;
+
   return c.json({
     token,
     email: `${handle}@${c.env.DOMAIN}`,
@@ -217,6 +255,7 @@ authRoutes.post('/agent-register', async (c) => {
     new_account: true,
     pending_emails: pendingResult?.count || 0,
     migrated_emails: migratedCount,
+    guidance,
   }, 201);
 });
 
@@ -271,6 +310,18 @@ authRoutes.post('/verify', async (c) => {
     'SELECT handle, token_address, token_symbol, tier FROM accounts WHERE wallet = ?'
   ).bind(wallet).first<{ handle: string; token_address: string | null; token_symbol: string | null; tier: string }>();
 
+  // NNS detection for 0x handle users
+  let upgrade_available = false;
+  let owned_nad_names: string[] = [];
+
+  if (account && /^0x/i.test(account.handle)) {
+    try {
+      const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org');
+      owned_nad_names = names.map(n => n.toLowerCase());
+      upgrade_available = owned_nad_names.length > 0;
+    } catch { /* non-critical */ }
+  }
+
   const secret = c.env.JWT_SECRET!;
   const token = await createToken(
     { wallet, handle: account?.handle || '' },
@@ -285,6 +336,11 @@ authRoutes.post('/verify', async (c) => {
     token_address: account?.token_address || null,
     token_symbol: account?.token_symbol || null,
     tier: account?.tier || 'free',
+    upgrade_available,
+    owned_nad_names: upgrade_available ? owned_nad_names : undefined,
+    upgrade_hint: upgrade_available
+      ? `You own .nad names! Call POST /api/register/upgrade-handle { "new_handle": "${owned_nad_names[0]}" } to upgrade.`
+      : undefined,
   });
 });
 
