@@ -9,7 +9,7 @@
  * Private key sources (in order of priority):
  *   1. NADMAIL_PRIVATE_KEY environment variable (recommended)
  *   2. --wallet argument specifying path to your key file
- *   3. ~/.nadmail/private-key (managed by setup.js)
+ *   3. ~/.nadmail/private-key.enc (encrypted, managed by setup.js)
  */
 
 const { ethers } = require('ethers');
@@ -22,6 +22,9 @@ const API_BASE = 'https://api.nadmail.ai';
 const CONFIG_DIR = path.join(process.env.HOME, '.nadmail');
 const TOKEN_FILE = path.join(CONFIG_DIR, 'token.json');
 const AUDIT_FILE = path.join(CONFIG_DIR, 'audit.log');
+
+// Max wallet file size (1KB — private keys are tiny)
+const MAX_WALLET_FILE_SIZE = 1024;
 
 function getArg(name) {
   const args = process.argv.slice(2);
@@ -77,29 +80,85 @@ function decryptPrivateKey(encryptedData, password) {
   return decrypted;
 }
 
+/**
+ * Validate a wallet file path for security
+ */
+function validateWalletPath(walletPath) {
+  const resolved = path.resolve(walletPath);
+
+  // Must be under home directory (prevent reading system files)
+  const home = process.env.HOME;
+  if (!resolved.startsWith(home)) {
+    console.error(`Security: Wallet path must be under your home directory (${home})`);
+    process.exit(1);
+  }
+
+  // Check for suspicious path components
+  if (walletPath.includes('..') || walletPath.includes('\0')) {
+    console.error('Security: Invalid path — must not contain ".." or null bytes');
+    process.exit(1);
+  }
+
+  // Check file size
+  try {
+    const stat = fs.statSync(resolved);
+    if (stat.size > MAX_WALLET_FILE_SIZE) {
+      console.error(`Security: Wallet file too large (${stat.size} bytes, max ${MAX_WALLET_FILE_SIZE})`);
+      process.exit(1);
+    }
+    if (!stat.isFile()) {
+      console.error('Security: Path must point to a regular file');
+      process.exit(1);
+    }
+  } catch (e) {
+    // File doesn't exist — let the caller handle it
+  }
+
+  return resolved;
+}
+
 async function getPrivateKey() {
   // 1. Environment variable (highest priority, most secure)
   if (process.env.NADMAIL_PRIVATE_KEY) {
     console.log('Using NADMAIL_PRIVATE_KEY environment variable');
-    return process.env.NADMAIL_PRIVATE_KEY.trim();
+    const key = process.env.NADMAIL_PRIVATE_KEY.trim();
+    if (!/^0x[a-fA-F0-9]{64}$/.test(key)) {
+      console.error('Error: NADMAIL_PRIVATE_KEY must be a valid 0x-prefixed hex private key (66 chars)');
+      process.exit(1);
+    }
+    return key;
   }
 
-  // 2. --wallet argument
+  // 2. --wallet argument (with path validation)
   const walletArg = getArg('--wallet');
   if (walletArg) {
-    const walletPath = walletArg.replace(/^~/, process.env.HOME);
+    const walletPath = validateWalletPath(walletArg.replace(/^~/, process.env.HOME));
     if (fs.existsSync(walletPath)) {
       console.log(`Using wallet file: ${walletPath}`);
-      return fs.readFileSync(walletPath, 'utf8').trim();
+      const key = fs.readFileSync(walletPath, 'utf8').trim();
+      if (!/^0x[a-fA-F0-9]{64}$/.test(key)) {
+        console.error('Error: Wallet file must contain a valid 0x-prefixed hex private key');
+        process.exit(1);
+      }
+      return key;
     } else {
       console.error(`Wallet file not found: ${walletPath}`);
       process.exit(1);
     }
   }
 
-  // 3. ~/.nadmail managed wallet (encrypted or plaintext)
+  // 3. ~/.nadmail managed wallet (encrypted only — plaintext no longer supported)
   const encryptedKeyFile = path.join(CONFIG_DIR, 'private-key.enc');
-  const plaintextKeyFile = path.join(CONFIG_DIR, 'private-key');
+  const legacyPlaintextFile = path.join(CONFIG_DIR, 'private-key');
+
+  // Warn about legacy plaintext file
+  if (fs.existsSync(legacyPlaintextFile) && !fs.existsSync(encryptedKeyFile)) {
+    console.error('Security: Plaintext private key storage is no longer supported (v1.0.4).');
+    console.error('Please re-run setup with encryption: node setup.js --managed');
+    console.error('Or use environment variable: export NADMAIL_PRIVATE_KEY="0x..."');
+    logAudit('plaintext_key_rejected', { success: false, error: 'plaintext_deprecated' });
+    process.exit(1);
+  }
 
   if (fs.existsSync(encryptedKeyFile)) {
     console.log(`Found encrypted wallet: ${encryptedKeyFile}`);
@@ -117,16 +176,11 @@ async function getPrivateKey() {
     }
   }
 
-  if (fs.existsSync(plaintextKeyFile)) {
-    console.log(`Using managed wallet: ${plaintextKeyFile}`);
-    return fs.readFileSync(plaintextKeyFile, 'utf8').trim();
-  }
-
   console.error('No wallet found.\n');
   console.error('Options:');
   console.error('  A. export NADMAIL_PRIVATE_KEY="0xYourPrivateKey"');
   console.error('  B. node register.js --wallet /path/to/key');
-  console.error('  C. node setup.js --managed (generate new wallet)');
+  console.error('  C. node setup.js --managed (generate new encrypted wallet)');
   process.exit(1);
 }
 
@@ -220,6 +274,15 @@ async function main() {
   console.log(`Token saved to: ${TOKEN_FILE}`);
   if (registerData.token_address) {
     console.log(`Meme coin: $${registerData.token_symbol} (${registerData.token_address})`);
+  }
+
+  // Show upgrade guidance if applicable
+  if (registerData.guidance) {
+    const g = registerData.guidance;
+    console.log(`\n${g.message}`);
+    if (g.owned_nad_names) {
+      console.log(`Your .nad names: ${g.owned_nad_names.map(n => n + '.nad').join(', ')}`);
+    }
   }
 
   console.log('\nNext steps:');

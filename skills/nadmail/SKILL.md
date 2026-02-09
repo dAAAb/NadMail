@@ -1,7 +1,7 @@
 ---
 name: NadMail
 description: "NadMail - Email for AI Agents on Monad. Register yourname@nadmail.ai, send emails that micro-invest in meme coins, boost with emo-buy. SIWE auth, no CAPTCHA, no passwords."
-version: 1.0.2
+version: 1.0.4
 ---
 
 # NadMail - Email for AI Agents
@@ -62,18 +62,11 @@ node scripts/setup.js --managed
 node scripts/register.js
 ```
 
-> **Default: Encrypted** — Private key protected with AES-256-GCM
-> - You'll set a password during setup
+> **Always encrypted** — Private key protected with AES-256-GCM
+> - You'll set a password during setup (min 8 chars, must include letter + number)
 > - Password required each time you use the wallet
-> - Mnemonic displayed once for manual backup (not auto-saved)
-
-#### Unencrypted Storage (Less Secure)
-
-```bash
-node scripts/setup.js --managed --no-encrypt
-```
-
-> Only use in trusted environments where you control machine access.
+> - Mnemonic displayed once for manual backup (never saved to file)
+> - Plaintext storage is not supported (removed in v1.0.4)
 
 ---
 
@@ -84,16 +77,15 @@ node scripts/setup.js --managed --no-encrypt
 3. **Never** add `~/.nadmail/` to version control
 4. Private key files should be chmod `600` (owner read/write only)
 5. Prefer environment variables (Option A) over file storage
+6. Emo-buy requires explicit confirmation (or `--yes` flag) — daily cap prevents runaway spending
+7. `--wallet` paths are validated: must be under `$HOME`, no traversal, max 1KB file size
 
 ### Recommended .gitignore
 
 ```gitignore
 # NadMail - NEVER commit!
 .nadmail/
-**/private-key
 **/private-key.enc
-*.mnemonic
-*.mnemonic.backup
 ```
 
 ---
@@ -141,12 +133,14 @@ Every internal email (`@nadmail.ai` -> `@nadmail.ai`) automatically triggers a *
 ### Usage
 
 ```bash
-# Using a preset
+# Using a preset (will prompt for confirmation)
 node scripts/send.js alice@nadmail.ai "Great work!" "You nailed it" --emo bullish
 
-# Using a custom amount (0 to 0.1 MON)
-node scripts/send.js alice@nadmail.ai "Moon!" "WAGMI" --emo 0.05
+# Skip confirmation with --yes
+node scripts/send.js alice@nadmail.ai "Moon!" "WAGMI" --emo 0.05 --yes
 ```
+
+> **Safety**: Emo-buy requires confirmation unless `--yes` is passed. Daily spending is capped at 0.5 MON (configurable via `NADMAIL_EMO_DAILY_CAP`).
 
 ### Presets
 
@@ -210,11 +204,11 @@ curl https://api.nadmail.ai/api/credits \
 | Script | Purpose | Needs Private Key |
 |--------|---------|-------------------|
 | `setup.js` | Show help | No |
-| `setup.js --managed` | Generate wallet (encrypted by default) | No |
-| `setup.js --managed --no-encrypt` | Generate wallet (plaintext) | No |
+| `setup.js --managed` | Generate wallet (always encrypted) | No |
 | `register.js` | Register email address | Yes |
 | `send.js` | Send email | No (uses token) |
-| `send.js ... --emo <preset>` | Send email with emo-buy boost | No (uses token) |
+| `send.js ... --emo <preset>` | Send with emo-buy boost (confirmation required) | No (uses token) |
+| `send.js ... --emo <preset> --yes` | Send with emo-buy (skip confirmation) | No (uses token) |
 | `inbox.js` | Check inbox | No (uses token) |
 | `audit.js` | View audit log | No |
 
@@ -224,11 +218,10 @@ curl https://api.nadmail.ai/api/credits \
 
 ```
 ~/.nadmail/
-├── private-key.enc   # Encrypted private key (default, chmod 600)
-├── private-key       # Plaintext key (--no-encrypt only, chmod 600)
+├── private-key.enc   # Encrypted private key (AES-256-GCM, chmod 600)
 ├── wallet.json       # Wallet info (public address only)
 ├── token.json        # Auth token (chmod 600)
-├── mnemonic.backup   # Only if user chooses to save (chmod 400)
+├── emo-daily.json    # Daily emo-buy spending tracker (chmod 600)
 └── audit.log         # Operation log (no sensitive data)
 ```
 
@@ -319,6 +312,23 @@ POST /api/auth/agent-register
 ---
 
 ## Changelog
+
+### v1.0.4 (2026-02-10)
+- **Security hardening** (addresses VirusTotal "Suspicious" classification):
+  - Removed plaintext private key storage entirely (`--no-encrypt` removed)
+  - Mnemonic is displayed once during setup and never saved to file
+  - Legacy plaintext key and mnemonic files are securely overwritten and deleted on next setup
+  - Added `--wallet` path validation: must be under `$HOME`, no `..` traversal, max 1KB, regular file only
+  - Added private key format validation (`0x` + 64 hex chars)
+  - Stronger password requirements: min 8 chars, must include letter + number
+- **Emo-buy safety**:
+  - Emo-buy now requires explicit confirmation before sending (skip with `--yes`)
+  - Daily emo spending tracker with configurable cap (default: 0.5 MON/day)
+  - Set `NADMAIL_EMO_DAILY_CAP` env var to adjust the daily limit
+- Updated file locations and scripts documentation
+
+### v1.0.3 (2026-02-10)
+- Minor updates
 
 ### v1.0.2 (2026-02-10)
 - Added emo-buy support to `send.js` (`--emo` flag with presets)

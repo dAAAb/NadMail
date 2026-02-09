@@ -5,8 +5,10 @@
  *
  * Usage:
  *   node setup.js              # Show help
- *   node setup.js --managed    # Generate wallet (encrypted by default)
- *   node setup.js --managed --no-encrypt  # Generate without encryption
+ *   node setup.js --managed    # Generate wallet (always encrypted)
+ *
+ * Security: Private keys are ALWAYS encrypted with AES-256-GCM.
+ * Plaintext storage is not supported.
  */
 
 const { ethers } = require('ethers');
@@ -16,11 +18,13 @@ const readline = require('readline');
 const crypto = require('crypto');
 
 const CONFIG_DIR = path.join(process.env.HOME, '.nadmail');
-const KEY_FILE = path.join(CONFIG_DIR, 'private-key');
 const KEY_FILE_ENCRYPTED = path.join(CONFIG_DIR, 'private-key.enc');
 const WALLET_FILE = path.join(CONFIG_DIR, 'wallet.json');
-const MNEMONIC_FILE = path.join(CONFIG_DIR, 'mnemonic.backup');
 const AUDIT_FILE = path.join(CONFIG_DIR, 'audit.log');
+
+// Legacy files to clean up
+const LEGACY_PLAINTEXT_KEY = path.join(CONFIG_DIR, 'private-key');
+const LEGACY_MNEMONIC_FILE = path.join(CONFIG_DIR, 'mnemonic.backup');
 
 function prompt(question) {
   const rl = readline.createInterface({
@@ -33,10 +37,6 @@ function prompt(question) {
       resolve(answer.trim());
     });
   });
-}
-
-function promptPassword(question) {
-  return prompt(question);
 }
 
 function logAudit(action, details = {}) {
@@ -70,7 +70,28 @@ function encryptPrivateKey(privateKey, password) {
     iv: iv.toString('hex'),
     authTag: authTag.toString('hex'),
     algorithm: 'aes-256-gcm',
+    version: 2,
   };
+}
+
+/**
+ * Validate password strength
+ */
+function validatePassword(password) {
+  const errors = [];
+  if (!password || password.length < 8) {
+    errors.push('Password must be at least 8 characters');
+  }
+  if (password && password.length > 128) {
+    errors.push('Password must not exceed 128 characters');
+  }
+  if (password && !/[a-zA-Z]/.test(password)) {
+    errors.push('Password must contain at least one letter');
+  }
+  if (password && !/[0-9]/.test(password)) {
+    errors.push('Password must contain at least one number');
+  }
+  return { valid: errors.length === 0, errors };
 }
 
 function showHelp() {
@@ -87,19 +108,53 @@ function showHelp() {
   console.log('-'.repeat(50));
   console.log('\nIf you don\'t have a wallet, let this skill generate one:\n');
   console.log('   node setup.js --managed\n');
-  console.log('   Encrypted by default. Private key stored at ~/.nadmail/private-key.enc');
-  console.log('   Only recommended if you don\'t already have a wallet.\n');
+  console.log('   Private key is ALWAYS encrypted with AES-256-GCM.');
+  console.log('   Stored at ~/.nadmail/private-key.enc\n');
+}
 
-  console.log('Unencrypted option (less secure):\n');
-  console.log('   node setup.js --managed --no-encrypt\n');
-  console.log('   Private key stored in plaintext. Only use in trusted environments.\n');
+/**
+ * Clean up legacy insecure files if they exist
+ */
+function cleanupLegacyFiles() {
+  let cleaned = false;
+
+  if (fs.existsSync(LEGACY_PLAINTEXT_KEY)) {
+    // Overwrite with random data before deleting (best effort secure delete)
+    try {
+      const size = fs.statSync(LEGACY_PLAINTEXT_KEY).size;
+      fs.writeFileSync(LEGACY_PLAINTEXT_KEY, crypto.randomBytes(size));
+      fs.unlinkSync(LEGACY_PLAINTEXT_KEY);
+      console.log('   Removed legacy plaintext key file (security upgrade)');
+      cleaned = true;
+    } catch (e) {
+      console.error('   Warning: Could not remove legacy plaintext key:', LEGACY_PLAINTEXT_KEY);
+    }
+  }
+
+  if (fs.existsSync(LEGACY_MNEMONIC_FILE)) {
+    try {
+      const size = fs.statSync(LEGACY_MNEMONIC_FILE).size;
+      fs.writeFileSync(LEGACY_MNEMONIC_FILE, crypto.randomBytes(size));
+      fs.unlinkSync(LEGACY_MNEMONIC_FILE);
+      console.log('   Removed legacy mnemonic backup file (security upgrade)');
+      cleaned = true;
+    } catch (e) {
+      console.error('   Warning: Could not remove legacy mnemonic file:', LEGACY_MNEMONIC_FILE);
+    }
+  }
+
+  return cleaned;
 }
 
 async function main() {
   const args = process.argv.slice(2);
   const isManaged = args.includes('--managed');
-  const noEncrypt = args.includes('--no-encrypt');
-  const isEncrypt = !noEncrypt;
+
+  if (args.includes('--no-encrypt')) {
+    console.error('Error: --no-encrypt has been removed in v1.0.4 for security reasons.');
+    console.error('Private keys are always encrypted. Run: node setup.js --managed');
+    process.exit(1);
+  }
 
   if (!isManaged) {
     showHelp();
@@ -109,20 +164,17 @@ async function main() {
   console.log('NadMail Wallet Setup (Managed Mode)');
   console.log('=======================================\n');
 
-  console.log('Warning: About to generate a new wallet.');
-  if (isEncrypt) {
-    console.log('   Private key will be encrypted and stored at ~/.nadmail/\n');
-  } else {
-    console.log('   Private key will be stored in PLAINTEXT at ~/.nadmail/');
-    console.log('   Make sure only you have access to this machine.');
-    console.log('   Consider using encrypted mode instead (remove --no-encrypt).\n');
-  }
+  console.log('About to generate a new wallet.');
+  console.log('   Private key will be encrypted with AES-256-GCM');
+  console.log('   Stored at ~/.nadmail/private-key.enc\n');
+
+  // Clean up any legacy insecure files
+  cleanupLegacyFiles();
 
   // Check if wallet already exists
-  if (fs.existsSync(KEY_FILE) || fs.existsSync(KEY_FILE_ENCRYPTED)) {
-    console.log('Wallet already exists!');
-    if (fs.existsSync(KEY_FILE)) console.log(`   ${KEY_FILE}`);
-    if (fs.existsSync(KEY_FILE_ENCRYPTED)) console.log(`   ${KEY_FILE_ENCRYPTED}`);
+  if (fs.existsSync(KEY_FILE_ENCRYPTED)) {
+    console.log('Encrypted wallet already exists!');
+    console.log(`   ${KEY_FILE_ENCRYPTED}`);
 
     const answer = await prompt('\nOverwrite existing wallet? This will permanently delete the old one! (yes/no): ');
     if (answer.toLowerCase() !== 'yes') {
@@ -142,80 +194,60 @@ async function main() {
     console.log(`\nCreated directory ${CONFIG_DIR}`);
   }
 
+  // Password setup with validation
+  let password;
+  while (true) {
+    password = await prompt('\nSet encryption password (min 8 chars, must include letter + number): ');
+    const validation = validatePassword(password);
+    if (validation.valid) break;
+    console.error('Invalid password:');
+    validation.errors.forEach(e => console.error(`   - ${e}`));
+  }
+
+  const confirmPwd = await prompt('Confirm password: ');
+  if (password !== confirmPwd) {
+    console.error('Passwords do not match. Cancelled.');
+    process.exit(1);
+  }
+
   console.log('\nGenerating new wallet...\n');
   const wallet = ethers.Wallet.createRandom();
+
+  const encryptedData = encryptPrivateKey(wallet.privateKey, password);
+  fs.writeFileSync(KEY_FILE_ENCRYPTED, JSON.stringify(encryptedData, null, 2), { mode: 0o600 });
 
   console.log('='.repeat(50));
   console.log('New wallet created');
   console.log('='.repeat(50));
   console.log(`\nAddress: ${wallet.address}`);
+  console.log(`Encrypted key saved to: ${KEY_FILE_ENCRYPTED}`);
 
-  if (isEncrypt) {
-    const password = await promptPassword('\nSet encryption password: ');
-    const confirmPwd = await promptPassword('Confirm password: ');
-
-    if (password !== confirmPwd) {
-      console.error('Passwords do not match. Cancelled.');
-      process.exit(1);
-    }
-
-    if (password.length < 8) {
-      console.error('Password must be at least 8 characters.');
-      process.exit(1);
-    }
-
-    const encryptedData = encryptPrivateKey(wallet.privateKey, password);
-    fs.writeFileSync(KEY_FILE_ENCRYPTED, JSON.stringify(encryptedData, null, 2), { mode: 0o600 });
-    console.log(`\nEncrypted key saved to: ${KEY_FILE_ENCRYPTED}`);
-
-    if (fs.existsSync(KEY_FILE)) {
-      fs.unlinkSync(KEY_FILE);
-    }
-  } else {
-    fs.writeFileSync(KEY_FILE, wallet.privateKey, { mode: 0o600 });
-    console.log(`\nPrivate key saved to: ${KEY_FILE}`);
-
-    if (fs.existsSync(KEY_FILE_ENCRYPTED)) {
-      fs.unlinkSync(KEY_FILE_ENCRYPTED);
-    }
-  }
-
-  // Display mnemonic for manual backup
+  // Display mnemonic ONCE — never save to file
   console.log('\n' + '='.repeat(50));
-  console.log('IMPORTANT: Back up your mnemonic phrase now!');
+  console.log('BACKUP YOUR MNEMONIC PHRASE NOW!');
   console.log('='.repeat(50));
   console.log('\n' + wallet.mnemonic.phrase + '\n');
   console.log('='.repeat(50));
-  console.log('This is shown only once! Write it down or store it safely.');
-  console.log('Losing your mnemonic means losing access to your wallet.');
+  console.log('This is shown ONLY ONCE and is NOT saved anywhere.');
+  console.log('Write it down on paper or store in a password manager.');
+  console.log('Losing your mnemonic = losing your wallet permanently.');
   console.log('='.repeat(50));
-
-  const saveMnemonic = await prompt('\nSave mnemonic to file? (yes/no, default no): ');
-  if (saveMnemonic.toLowerCase() === 'yes') {
-    fs.writeFileSync(MNEMONIC_FILE, wallet.mnemonic.phrase, { mode: 0o400 });
-    console.log(`Mnemonic saved to: ${MNEMONIC_FILE} (read-only)`);
-    console.log('Consider deleting this file after backing it up elsewhere.');
-  } else {
-    console.log('Mnemonic not saved to file. Make sure you backed it up manually.');
-  }
 
   const walletInfo = {
     address: wallet.address,
     created_at: new Date().toISOString(),
-    encrypted: isEncrypt,
-    note: 'Private key stored separately',
+    encrypted: true,
+    skill_version: '1.0.4',
+    note: 'Private key stored separately (encrypted)',
   };
   fs.writeFileSync(WALLET_FILE, JSON.stringify(walletInfo, null, 2), { mode: 0o600 });
   logAudit('wallet_created', { wallet: wallet.address, success: true });
 
-  console.log('\n' + '='.repeat(50));
   console.log('\nSecurity reminders:');
-  console.log('   1. Back up your mnemonic to a safe location');
-  console.log('   2. Delete the mnemonic file after backing up');
+  console.log('   1. Back up your mnemonic to a safe location (paper/password manager)');
+  console.log('   2. Remember your encryption password — it cannot be recovered');
   console.log('   3. Never share your private key or mnemonic');
-  if (isEncrypt) {
-    console.log('   4. Remember your encryption password — it cannot be recovered');
-  }
+  console.log('   4. Never commit ~/.nadmail/ to git');
 
   console.log('\nNext steps:');
   console.log('   node scripts/register.js');

@@ -2,21 +2,31 @@
 /**
  * NadMail Send Email Script
  *
- * Usage: node send.js <to> <subject> <body> [--emo <preset|amount>]
+ * Usage: node send.js <to> <subject> <body> [--emo <preset|amount>] [--yes]
  *
  * Examples:
  *   node send.js alice@nadmail.ai "Hello" "How are you?"
  *   node send.js alice@nadmail.ai "Hello" "Great work!" --emo bullish
- *   node send.js alice@nadmail.ai "Hello" "WAGMI!" --emo 0.1
+ *   node send.js alice@nadmail.ai "Hello" "WAGMI!" --emo 0.1 --yes
+ *
+ * Security:
+ *   --emo triggers a financial transaction. Confirmation is required unless --yes is passed.
+ *   Daily emo spending is tracked and capped (default: 0.5 MON/day).
  */
 
 const fs = require('fs');
 const path = require('path');
+const readline = require('readline');
 
 const API_BASE = 'https://api.nadmail.ai';
 const CONFIG_DIR = path.join(process.env.HOME, '.nadmail');
 const TOKEN_FILE = path.join(CONFIG_DIR, 'token.json');
 const AUDIT_FILE = path.join(CONFIG_DIR, 'audit.log');
+const EMO_TRACKER_FILE = path.join(CONFIG_DIR, 'emo-daily.json');
+
+// Daily emo spending cap (MON) — configurable via NADMAIL_EMO_DAILY_CAP env var
+const DEFAULT_EMO_DAILY_CAP = 0.5;
+const EMO_DAILY_CAP = parseFloat(process.env.NADMAIL_EMO_DAILY_CAP) || DEFAULT_EMO_DAILY_CAP;
 
 // Emo-buy presets (same tiers as the $DIPLOMAT AI agent)
 const EMO_PRESETS = {
@@ -27,6 +37,19 @@ const EMO_PRESETS = {
   wagmi:    { amount: 0.1,   label: 'WAGMI (+0.1 MON)' },
 };
 
+function prompt(question) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  return new Promise(resolve => {
+    rl.question(question, answer => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
 function logAudit(action, details = {}) {
   try {
     if (!fs.existsSync(CONFIG_DIR)) return;
@@ -34,6 +57,7 @@ function logAudit(action, details = {}) {
       timestamp: new Date().toISOString(),
       action,
       to: details.to ? `${details.to.split('@')[0].slice(0, 4)}...@${details.to.split('@')[1]}` : null,
+      emo_amount: details.emo_amount || null,
       success: details.success ?? true,
       error: details.error,
     };
@@ -41,6 +65,61 @@ function logAudit(action, details = {}) {
   } catch (e) {
     // Silently ignore audit errors
   }
+}
+
+/**
+ * Track daily emo spending and check against cap
+ */
+function checkEmoDailyLimit(emoAmount) {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+  let tracker = { date: today, total: 0 };
+  try {
+    if (fs.existsSync(EMO_TRACKER_FILE)) {
+      tracker = JSON.parse(fs.readFileSync(EMO_TRACKER_FILE, 'utf8'));
+      if (tracker.date !== today) {
+        tracker = { date: today, total: 0 };
+      }
+    }
+  } catch {
+    tracker = { date: today, total: 0 };
+  }
+
+  const newTotal = tracker.total + emoAmount;
+  if (newTotal > EMO_DAILY_CAP) {
+    return {
+      allowed: false,
+      spent_today: tracker.total,
+      remaining: Math.max(0, EMO_DAILY_CAP - tracker.total),
+      cap: EMO_DAILY_CAP,
+    };
+  }
+
+  return {
+    allowed: true,
+    spent_today: tracker.total,
+    remaining: EMO_DAILY_CAP - tracker.total,
+    cap: EMO_DAILY_CAP,
+  };
+}
+
+function recordEmoSpend(emoAmount) {
+  const today = new Date().toISOString().slice(0, 10);
+
+  let tracker = { date: today, total: 0 };
+  try {
+    if (fs.existsSync(EMO_TRACKER_FILE)) {
+      tracker = JSON.parse(fs.readFileSync(EMO_TRACKER_FILE, 'utf8'));
+      if (tracker.date !== today) {
+        tracker = { date: today, total: 0 };
+      }
+    }
+  } catch {
+    tracker = { date: today, total: 0 };
+  }
+
+  tracker.total += emoAmount;
+  fs.writeFileSync(EMO_TRACKER_FILE, JSON.stringify(tracker, null, 2), { mode: 0o600 });
 }
 
 function getToken() {
@@ -74,6 +153,10 @@ function getArg(name) {
   return null;
 }
 
+function hasFlag(name) {
+  return process.argv.slice(2).includes(name);
+}
+
 function parseEmoArg() {
   const emoValue = getArg('--emo');
   if (!emoValue) return 0;
@@ -93,7 +176,9 @@ function parseEmoArg() {
 }
 
 async function main() {
-  // Filter out --emo and its value from positional args
+  const autoConfirm = hasFlag('--yes');
+
+  // Filter out flags and their values from positional args
   const rawArgs = process.argv.slice(2);
   const positional = [];
   for (let i = 0; i < rawArgs.length; i++) {
@@ -101,6 +186,7 @@ async function main() {
       i++; // skip value
       continue;
     }
+    if (rawArgs[i] === '--yes') continue;
     positional.push(rawArgs[i]);
   }
 
@@ -109,16 +195,19 @@ async function main() {
 
   if (!to || !subject) {
     console.log('NadMail - Send Email\n');
-    console.log('Usage: node send.js <to> <subject> <body> [--emo <preset|amount>]\n');
+    console.log('Usage: node send.js <to> <subject> <body> [--emo <preset|amount>] [--yes]\n');
     console.log('Examples:');
     console.log('  node send.js alice@nadmail.ai "Hello" "How are you?"');
     console.log('  node send.js alice@nadmail.ai "Hello" "Great work!" --emo bullish');
-    console.log('  node send.js alice@nadmail.ai "Hello" "WAGMI!" --emo 0.1\n');
+    console.log('  node send.js alice@nadmail.ai "Hello" "WAGMI!" --emo 0.1 --yes\n');
     console.log('Emo-Buy Presets (extra MON to pump recipient\'s meme coin):');
     for (const [name, preset] of Object.entries(EMO_PRESETS)) {
       console.log(`  --emo ${name.padEnd(10)} ${preset.label} (total: ${(0.001 + preset.amount).toFixed(3)} MON)`);
     }
-    console.log('\nNote: Emo-buy only works for @nadmail.ai recipients.');
+    console.log('\nFlags:');
+    console.log('  --yes          Skip confirmation prompt for emo-buy');
+    console.log(`\nDaily emo cap: ${EMO_DAILY_CAP} MON (set NADMAIL_EMO_DAILY_CAP to change)`);
+    console.log('Note: Emo-buy only works for @nadmail.ai recipients.');
     console.log('External emails require credits (see: GET /api/credits).');
     process.exit(1);
   }
@@ -126,6 +215,37 @@ async function main() {
   const emoAmount = parseEmoArg();
   const isInternal = to.toLowerCase().endsWith('@nadmail.ai');
   const token = getToken();
+
+  // Emo-buy safety checks
+  if (emoAmount > 0 && isInternal) {
+    // Check daily limit
+    const limitCheck = checkEmoDailyLimit(emoAmount);
+    if (!limitCheck.allowed) {
+      console.error(`\nDaily emo spending limit reached!`);
+      console.error(`  Spent today: ${limitCheck.spent_today.toFixed(4)} MON`);
+      console.error(`  Daily cap: ${limitCheck.cap} MON`);
+      console.error(`  Remaining: ${limitCheck.remaining.toFixed(4)} MON`);
+      console.error(`\nSet NADMAIL_EMO_DAILY_CAP to adjust (current: ${EMO_DAILY_CAP} MON)`);
+      process.exit(1);
+    }
+
+    // Confirmation prompt (unless --yes)
+    if (!autoConfirm) {
+      const presetEntry = Object.entries(EMO_PRESETS).find(([, p]) => p.amount === emoAmount);
+      const label = presetEntry ? presetEntry[0] : 'custom';
+      console.log(`\nEmo-Buy Confirmation:`);
+      console.log(`  Recipient: ${to}`);
+      console.log(`  Emo level: ${label} (+${emoAmount} MON)`);
+      console.log(`  Total cost: ${(0.001 + emoAmount).toFixed(3)} MON (micro-buy + emo)`);
+      console.log(`  Today's emo spending: ${limitCheck.spent_today.toFixed(4)} / ${limitCheck.cap} MON`);
+
+      const answer = await prompt('\nProceed with emo-buy? (yes/no): ');
+      if (answer.toLowerCase() !== 'yes' && answer.toLowerCase() !== 'y') {
+        console.log('Cancelled. Email not sent.');
+        process.exit(0);
+      }
+    }
+  }
 
   // Build request body
   const reqBody = { to, subject, body: body || '' };
@@ -181,7 +301,12 @@ async function main() {
         }
       }
 
-      logAudit('send_email', { to, success: true });
+      // Record emo spending
+      if (emoAmount > 0 && isInternal) {
+        recordEmoSpend(emoAmount);
+      }
+
+      logAudit('send_email', { to, emo_amount: emoAmount > 0 ? emoAmount : null, success: true });
     } else {
       console.error('\nFailed:', data.error || JSON.stringify(data));
       if (data.hint) console.error('Hint:', data.hint);
