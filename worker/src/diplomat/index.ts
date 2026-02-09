@@ -8,7 +8,7 @@
  */
 
 import { Env } from '../types';
-import { createToken } from '../auth';
+import { sendInternalEmail, sendExternalEmail } from '../send-internal';
 import * as claude from './claude';
 import * as moltbook from './moltbook';
 import * as trading from './trading';
@@ -59,12 +59,6 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
     console.log('[diplomat] No diplomat account found in DB, skipping cycle');
     return;
   }
-
-  // Generate internal JWT for API calls
-  const jwt = await createToken(
-    { wallet: diplomatAcct.wallet, handle: DIPLOMAT_HANDLE },
-    env.JWT_SECRET!,
-  );
 
   let emailsProcessed = 0;
   let emailsReplied = 0;
@@ -123,26 +117,24 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
             },
           );
 
-          // Send reply via own /api/send (triggers micro-buy)
+          // Send reply (internal or external depending on sender address)
           const replySubject = (email.subject as string)?.startsWith('Re:')
             ? email.subject as string
             : `Re: ${(email.subject as string) || '(no subject)'}`;
 
-          const sendRes = await fetch(`https://api.${env.DOMAIN}/api/send`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${jwt}`,
-            },
-            body: JSON.stringify({
-              to: email.from_addr,
-              subject: replySubject,
-              body: reply,
-              in_reply_to: email.id,
-            }),
+          const replyTo = email.from_addr as string;
+          const isInternal = replyTo.toLowerCase().endsWith(`@${env.DOMAIN}`);
+          const sendFn = isInternal ? sendInternalEmail : sendExternalEmail;
+
+          const sendResult = await sendFn(env, {
+            fromHandle: DIPLOMAT_HANDLE,
+            fromWallet: diplomatAcct.wallet,
+            to: replyTo,
+            subject: replySubject,
+            body: reply,
+            in_reply_to: email.id as string,
           });
 
-          const sendResult = await sendRes.json() as Record<string, unknown>;
           trading.recordInteraction(portfolio, senderHandle, 'sent');
 
           state.repliedEmailIds.push(email.id as string);
@@ -152,7 +144,7 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
             action: 'email_reply',
             to: email.from_addr,
             subject: replySubject,
-            microbuy: (sendResult.microbuy as Record<string, unknown>)?.tx || null,
+            microbuy: sendResult.microbuy?.tx || null,
           });
           console.log(`[diplomat] Replied to ${email.from_addr}`);
         } catch (e) {

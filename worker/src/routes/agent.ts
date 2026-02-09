@@ -1,10 +1,25 @@
 import { Hono } from 'hono';
 import { Env } from '../types';
 import { authMiddleware } from '../auth';
+import { runDiplomatCycle } from '../diplomat';
 
 export const agentRoutes = new Hono<{ Bindings: Env }>();
 
 agentRoutes.use('/*', authMiddleware());
+
+/**
+ * POST /api/agent/trigger
+ * 手動觸發 diplomat cycle（僅限 nadmail 帳號）
+ */
+agentRoutes.post('/trigger', async (c) => {
+  const auth = c.get('auth');
+  if (auth.handle !== 'nadmail') {
+    return c.json({ error: 'Unauthorized' }, 403);
+  }
+  const start = Date.now();
+  await runDiplomatCycle(c.env);
+  return c.json({ success: true, duration_ms: Date.now() - start });
+});
 
 /**
  * GET /api/agent/logs
