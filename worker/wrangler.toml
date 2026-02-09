@@ -34,6 +34,15 @@ bucket_name = "nadmail-emails"
 binding = "NONCE_KV"
 id = "95f56c7825ad40499b0574223b2e652f"
 
+# KV Namespace — $DIPLOMAT agent state
+[[kv_namespaces]]
+binding = "AGENT_KV"
+id = "efe4fa7828fb4c839f4abcbe019f496a"
+
+# Cron Trigger — $DIPLOMAT agent 每 30 分鐘跑一次
+[triggers]
+crons = ["*/30 * * * *"]
+
 # Email 寄信 binding（不限制目的地，由程式碼控制）
 [[send_email]]
 name = "SEND_EMAIL"

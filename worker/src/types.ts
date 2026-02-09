@@ -3,6 +3,7 @@ export interface Env {
   DB: D1Database;
   EMAIL_STORE: R2Bucket;
   NONCE_KV: KVNamespace;
+  AGENT_KV: KVNamespace;
   SEND_EMAIL: SendEmail;
 
   // Variables
@@ -17,6 +18,12 @@ export interface Env {
   WALLET_PRIVATE_KEY?: string;   // Worker 錢包私鑰，用於代付 token 建立 + micro-buy
   RESEND_API_KEY?: string;       // Resend.com API Key，用於外部寄信
   WALLET_ADDRESS?: string;       // Worker 錢包公開地址，用於收取 credit 購買費用
+
+  // $DIPLOMAT agent
+  ANTHROPIC_API_KEY?: string;    // Claude API key
+  MOLTBOOK_API_KEY?: string;     // Moltbook agent API key
+  MOLTBOOK_AGENT_ID?: string;    // Moltbook agent ID
+  MOLTBOOK_API_URL?: string;     // Moltbook API base URL
 }
 
 export interface Account {

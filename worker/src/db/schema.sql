@@ -55,6 +55,23 @@ CREATE TABLE IF NOT EXISTS credit_transactions (
     FOREIGN KEY (handle) REFERENCES accounts(handle)
 );
 
+-- $DIPLOMAT agent 活動紀錄
+CREATE TABLE IF NOT EXISTS agent_logs (
+    id                TEXT PRIMARY KEY,
+    started_at        INTEGER NOT NULL,
+    finished_at       INTEGER NOT NULL,
+    duration_ms       INTEGER NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'success',
+    emails_processed  INTEGER NOT NULL DEFAULT 0,
+    emails_replied    INTEGER NOT NULL DEFAULT 0,
+    posts_created     INTEGER NOT NULL DEFAULT 0,
+    comments_left     INTEGER NOT NULL DEFAULT 0,
+    error_message     TEXT,
+    details           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_logs_started ON agent_logs(started_at DESC);
+
 -- 免費 .nad 名稱贈送池
 CREATE TABLE IF NOT EXISTS free_nad_names (
     name        TEXT PRIMARY KEY,

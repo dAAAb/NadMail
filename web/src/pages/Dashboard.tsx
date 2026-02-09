@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Fragment } from 'react';
 import { Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAccount, useConnect, useDisconnect, useSignMessage, useSendTransaction, useBalance, useSwitchChain } from 'wagmi';
 import { parseEther, formatUnits } from 'viem';
@@ -269,6 +269,9 @@ export default function Dashboard() {
           <NavLink to="/dashboard/sent" icon="send" label="Sent" active={location.pathname === '/dashboard/sent'} />
           <NavLink to="/dashboard/compose" icon="edit" label="Compose" active={location.pathname === '/dashboard/compose'} />
           <NavLink to="/dashboard/credits" icon="credits" label="Credits" active={location.pathname === '/dashboard/credits'} />
+          {(auth.handle === 'diplomat' || auth.handle === 'nadmail') && (
+            <NavLink to="/dashboard/agent" icon="agent" label="Agent" active={location.pathname === '/dashboard/agent'} />
+          )}
           <NavLink to="/dashboard/settings" icon="settings" label="Settings" active={location.pathname === '/dashboard/settings'} />
         </nav>
 
@@ -305,6 +308,7 @@ export default function Dashboard() {
           <Route path="sent" element={<Inbox auth={auth} folder="sent" />} />
           <Route path="compose" element={<Compose auth={auth} />} />
           <Route path="credits" element={<Credits auth={auth} />} />
+          <Route path="agent" element={<AgentActivity auth={auth} />} />
           <Route path="settings" element={<Settings auth={auth} setAuth={setAuth} />} />
           <Route path="email/:id" element={<EmailDetail auth={auth} />} />
         </Routes>
@@ -320,6 +324,7 @@ function NavLink({ to, icon, label, active }: { to: string; icon: string; label:
     edit: '\u{270F}\u{FE0F}',
     settings: '\u{2699}\u{FE0F}',
     credits: '\u{1FA99}',
+    agent: '\u{1F916}',
   };
   return (
     <Link
@@ -1536,6 +1541,218 @@ function Settings({ auth, setAuth }: { auth: AuthState; setAuth: (a: AuthState) 
           <p className="text-gray-600 text-xs mt-2">Click to copy</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Agent Activity ──────────────────────────────────────
+
+interface AgentLog {
+  id: string;
+  started_at: number;
+  finished_at: number;
+  duration_ms: number;
+  status: string;
+  emails_processed: number;
+  emails_replied: number;
+  posts_created: number;
+  comments_left: number;
+  error_message: string | null;
+}
+
+interface AgentStats {
+  total_cycles: number;
+  total_emails: number;
+  total_posts: number;
+  total_comments: number;
+  avg_duration_ms: number;
+  last_run: number | null;
+}
+
+function AgentActivity({ auth }: { auth: AuthState }) {
+  const [logs, setLogs] = useState<AgentLog[]>([]);
+  const [stats, setStats] = useState<AgentStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [details, setDetails] = useState<Record<string, unknown[]>>({});
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch('/api/agent/logs?limit=50', auth.token);
+        if (res.ok) {
+          const data = await res.json();
+          setLogs(data.logs || []);
+          setStats(data.stats || null);
+        }
+      } catch {}
+      setLoading(false);
+    })();
+  }, [auth.token]);
+
+  const loadDetails = async (logId: string) => {
+    if (details[logId]) {
+      setExpandedId(expandedId === logId ? null : logId);
+      return;
+    }
+    try {
+      const res = await apiFetch(`/api/agent/logs/${logId}`, auth.token);
+      if (res.ok) {
+        const data = await res.json();
+        setDetails((prev) => ({ ...prev, [logId]: data.details || [] }));
+      }
+    } catch {}
+    setExpandedId(logId);
+  };
+
+  const formatTime = (ts: number) => {
+    if (!ts) return '—';
+    return new Date(ts * 1000).toLocaleString();
+  };
+
+  const statusBadge = (status: string) => {
+    const colors: Record<string, string> = {
+      success: 'bg-green-900/50 text-green-400 border-green-800',
+      partial: 'bg-yellow-900/50 text-yellow-400 border-yellow-800',
+      error: 'bg-red-900/50 text-red-400 border-red-800',
+    };
+    return (
+      <span className={`px-2 py-0.5 rounded text-xs border ${colors[status] || 'bg-gray-800 text-gray-400 border-gray-700'}`}>
+        {status}
+      </span>
+    );
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin w-8 h-8 border-2 border-nad-purple border-t-transparent rounded-full" />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold mb-6">$DIPLOMAT Agent Activity</h2>
+
+      {/* Stats cards */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+          <div className="bg-nad-gray rounded-xl p-4 border border-gray-800">
+            <div className="text-gray-500 text-xs uppercase tracking-wider mb-1">Total Cycles</div>
+            <div className="text-2xl font-bold text-white">{stats.total_cycles}</div>
+          </div>
+          <div className="bg-nad-gray rounded-xl p-4 border border-gray-800">
+            <div className="text-gray-500 text-xs uppercase tracking-wider mb-1">Emails Replied</div>
+            <div className="text-2xl font-bold text-nad-purple">{stats.total_emails}</div>
+          </div>
+          <div className="bg-nad-gray rounded-xl p-4 border border-gray-800">
+            <div className="text-gray-500 text-xs uppercase tracking-wider mb-1">Posts Created</div>
+            <div className="text-2xl font-bold text-blue-400">{stats.total_posts}</div>
+          </div>
+          <div className="bg-nad-gray rounded-xl p-4 border border-gray-800">
+            <div className="text-gray-500 text-xs uppercase tracking-wider mb-1">Comments Left</div>
+            <div className="text-2xl font-bold text-green-400">{stats.total_comments}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Last run info */}
+      {stats?.last_run && (
+        <div className="text-sm text-gray-500 mb-4">
+          Last run: {formatTime(stats.last_run)} | Avg duration: {(stats.avg_duration_ms / 1000).toFixed(1)}s
+        </div>
+      )}
+
+      {/* Logs table */}
+      {logs.length === 0 ? (
+        <div className="bg-nad-gray rounded-xl p-8 border border-gray-800 text-center text-gray-500">
+          No agent activity yet. The diplomat runs every 30 minutes via cron.
+        </div>
+      ) : (
+        <div className="bg-nad-gray rounded-xl border border-gray-800 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
+                <th className="text-left px-4 py-3">Time</th>
+                <th className="text-left px-4 py-3">Duration</th>
+                <th className="text-center px-4 py-3">Emails</th>
+                <th className="text-center px-4 py-3">Posts</th>
+                <th className="text-center px-4 py-3">Comments</th>
+                <th className="text-center px-4 py-3">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((log) => (
+                <Fragment key={log.id}>
+                  <tr
+                    className="border-b border-gray-800/50 hover:bg-nad-dark/50 cursor-pointer transition"
+                    onClick={() => loadDetails(log.id)}
+                  >
+                    <td className="px-4 py-3 text-gray-300 whitespace-nowrap">{formatTime(log.started_at)}</td>
+                    <td className="px-4 py-3 text-gray-400 font-mono">{(log.duration_ms / 1000).toFixed(1)}s</td>
+                    <td className="px-4 py-3 text-center">
+                      {log.emails_replied > 0 ? (
+                        <span className="text-nad-purple font-bold">{log.emails_replied}</span>
+                      ) : (
+                        <span className="text-gray-600">0</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {log.posts_created > 0 ? (
+                        <span className="text-blue-400 font-bold">{log.posts_created}</span>
+                      ) : (
+                        <span className="text-gray-600">0</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {log.comments_left > 0 ? (
+                        <span className="text-green-400 font-bold">{log.comments_left}</span>
+                      ) : (
+                        <span className="text-gray-600">0</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center">{statusBadge(log.status)}</td>
+                  </tr>
+                  {expandedId === log.id && details[log.id] && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-3 bg-nad-dark/50">
+                        {log.error_message && (
+                          <div className="text-red-400 text-xs mb-2">Error: {log.error_message}</div>
+                        )}
+                        {details[log.id].length === 0 ? (
+                          <div className="text-gray-600 text-xs">No actions this cycle</div>
+                        ) : (
+                          <div className="space-y-1">
+                            {details[log.id].map((d: any, i: number) => (
+                              <div key={i} className="text-xs font-mono text-gray-400 flex gap-2">
+                                <span className={
+                                  d.action?.includes('error') ? 'text-red-400' :
+                                  d.action?.includes('email') ? 'text-nad-purple' :
+                                  d.action?.includes('post') ? 'text-blue-400' :
+                                  'text-green-400'
+                                }>
+                                  [{d.action}]
+                                </span>
+                                <span>
+                                  {d.to && `to: ${d.to}`}
+                                  {d.title && `"${d.title}"`}
+                                  {d.postTitle && `on: "${d.postTitle}"`}
+                                  {d.error && <span className="text-red-400">{d.error}</span>}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

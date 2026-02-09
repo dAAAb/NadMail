@@ -12,7 +12,9 @@ import { sendRoutes } from './routes/send';
 import { identityRoutes } from './routes/identity';
 import { creditsRoutes } from './routes/credits';
 import { proRoutes } from './routes/pro';
+import { agentRoutes } from './routes/agent';
 import { handleIncomingEmail } from './email-handler';
+import { runDiplomatCycle } from './diplomat';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -226,9 +228,13 @@ app.route('/api/send', sendRoutes);
 app.route('/api/identity', identityRoutes);
 app.route('/api/credits', creditsRoutes);
 app.route('/api/pro', proRoutes);
+app.route('/api/agent', agentRoutes);
 
-// 匯出 fetch handler (HTTP) 與 email handler (incoming mail)
+// 匯出 fetch handler (HTTP), email handler (incoming mail), scheduled handler (cron)
 export default {
   fetch: app.fetch,
   email: handleIncomingEmail,
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(runDiplomatCycle(env));
+  },
 };
