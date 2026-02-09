@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
-import { createPublicClient, http, formatEther } from 'viem';
+import { createPublicClient, http, formatEther, type Hex } from 'viem';
 import { Env } from '../types';
 import { authMiddleware, createToken } from '../auth';
 import { createToken as createNadFunToken, distributeInitialTokens } from '../nadfun';
 import { transferNadName } from '../nns-transfer';
 import { getNadNamesForWallet } from '../nns-lookup';
+import { executeNnsPurchase } from '../nns-purchase';
 
 const PRICE_ORACLE_V2 = '0xdF0e18bb6d8c5385d285C3c67919E99c0dce020d' as const;
 const NNS_REGISTRAR = '0xE18a7550AA35895c87A1069d1B775Fa275Bc93Fb' as const;
@@ -555,6 +556,7 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
     const basePriceWei = priceResult.base;
     const priceMon = parseFloat(formatEther(basePriceWei));
     const CONVENIENCE_FEE = 0.15; // 15%
+    const totalWei = (basePriceWei * 115n) / 100n;
 
     // Also check if already registered in NadMail
     const nadmailTaken = await c.env.DB.prepare(
@@ -571,7 +573,16 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
       proxy_buy: {
         fee_percent: CONVENIENCE_FEE * 100,
         total_mon: Math.ceil(priceMon * (1 + CONVENIENCE_FEE) * 100) / 100,
-        note: 'Proxy purchase coming soon. For now, buy directly at https://app.nad.domains/',
+        total_wei: totalWei.toString(),
+        available: isAvailable && !nadmailTaken,
+        method: 'POST /api/register/buy-nad-name/quote',
+        body: `{ "name": "${name}" }`,
+        flow: [
+          '1. POST /api/register/buy-nad-name/quote { "name": "..." } → get price + deposit_address',
+          '2. Send MON to deposit_address on Monad chain',
+          '3. POST /api/register/buy-nad-name { "name": "...", "tx_hash": "0x..." } → purchase executed',
+        ],
+        deposit_address: c.env.WALLET_ADDRESS,
       },
       buy_direct_url: `https://app.nad.domains/`,
       pricing_reference: {
@@ -594,6 +605,388 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
       },
     }, 500);
   }
+});
+
+// ── .nad Name Proxy Purchase ──
+
+const CONVENIENCE_FEE_RATE = 0.15; // 15%
+const QUOTE_EXPIRY_SECONDS = 600;  // 10 minutes
+
+/**
+ * POST /api/register/buy-nad-name/quote
+ * Get a price quote for proxy-purchasing a .nad name.
+ *
+ * Auth: Bearer token
+ * Body: { name: "alice" }
+ */
+registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
+  const auth = c.get('auth');
+  const body = await c.req.json<{ name: string }>().catch(() => ({ name: '' }));
+  const name = body.name?.toLowerCase().trim().replace(/\.nad$/, '');
+
+  if (!name || name.length < 3 || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) {
+    return c.json({ error: 'Invalid .nad name (3+ chars, alphanumeric + hyphens)' }, 400);
+  }
+
+  // Check NadMail availability
+  const nadmailTaken = await c.env.DB.prepare(
+    'SELECT handle FROM accounts WHERE handle = ?'
+  ).bind(name).first();
+
+  if (nadmailTaken) {
+    return c.json({ error: `${name} is already registered on NadMail` }, 409);
+  }
+
+  // Check for existing active order
+  const existingOrder = await c.env.DB.prepare(
+    "SELECT id, status FROM proxy_purchases WHERE wallet = ? AND name = ? AND status IN ('pending', 'paid', 'purchasing')"
+  ).bind(auth.wallet, name).first<{ id: string; status: string }>();
+
+  if (existingOrder) {
+    return c.json({
+      error: 'You already have an active order for this name',
+      existing_order_id: existingOrder.id,
+      status: existingOrder.status,
+    }, 409);
+  }
+
+  // Query NNS on-chain availability + price
+  const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+  const client = createPublicClient({ chain: monad, transport: http(rpcUrl) });
+
+  let isAvailable: boolean;
+  let basePriceWei: bigint;
+
+  try {
+    const [avail, priceResult] = await Promise.all([
+      client.readContract({
+        address: NNS_REGISTRAR,
+        abi: registrarAbi,
+        functionName: 'available',
+        args: [name],
+      }),
+      client.readContract({
+        address: PRICE_ORACLE_V2,
+        abi: priceOracleAbi,
+        functionName: 'getRegisteringPriceInToken',
+        args: [name, '0x0000000000000000000000000000000000000000'],
+      }),
+    ]);
+    isAvailable = avail;
+    basePriceWei = priceResult.base;
+  } catch (e: any) {
+    return c.json({ error: `Failed to query NNS contract: ${e.message}` }, 500);
+  }
+
+  if (!isAvailable) {
+    return c.json({ error: `${name}.nad is not available on NNS` }, 409);
+  }
+
+  // Calculate price with 15% convenience fee (bigint math)
+  const feeWei = (basePriceWei * 15n) / 100n;
+  const totalWei = basePriceWei + feeWei;
+
+  // Create pending order
+  const now = Math.floor(Date.now() / 1000);
+  const orderId = `pp-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+
+  await c.env.DB.prepare(
+    `INSERT INTO proxy_purchases (id, wallet, name, status, price_wei, fee_wei, total_wei, created_at)
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`
+  ).bind(orderId, auth.wallet, name, basePriceWei.toString(), feeWei.toString(), totalWei.toString(), now).run();
+
+  const priceMon = parseFloat(formatEther(basePriceWei));
+  const feeMon = parseFloat(formatEther(feeWei));
+  const totalMon = parseFloat(formatEther(totalWei));
+
+  return c.json({
+    order_id: orderId,
+    name,
+    nad_name: `${name}.nad`,
+    price: {
+      base_mon: priceMon,
+      base_wei: basePriceWei.toString(),
+      fee_percent: CONVENIENCE_FEE_RATE * 100,
+      fee_mon: feeMon,
+      fee_wei: feeWei.toString(),
+      total_mon: totalMon,
+      total_wei: totalWei.toString(),
+    },
+    payment: {
+      deposit_address: c.env.WALLET_ADDRESS,
+      amount_mon: totalMon,
+      amount_wei: totalWei.toString(),
+      chain: 'Monad (chainId: 143)',
+      currency: 'MON (native)',
+      instruction: `Send exactly ${totalMon.toFixed(4)} MON to ${c.env.WALLET_ADDRESS} on Monad chain, then call POST /api/register/buy-nad-name with { "name": "${name}", "tx_hash": "0x..." }`,
+    },
+    expires_at: now + QUOTE_EXPIRY_SECONDS,
+    expires_in_seconds: QUOTE_EXPIRY_SECONDS,
+  });
+});
+
+/**
+ * POST /api/register/buy-nad-name
+ * Execute .nad name proxy purchase after payment verification.
+ * Auto-upgrades 0x handles.
+ *
+ * Auth: Bearer token
+ * Body: { name: "alice", tx_hash: "0x..." }
+ */
+registerRoutes.post('/buy-nad-name', authMiddleware(), async (c) => {
+  const auth = c.get('auth');
+  const body = await c.req.json<{ name: string; tx_hash: string }>().catch(() => ({ name: '', tx_hash: '' }));
+
+  const name = body.name?.toLowerCase().trim().replace(/\.nad$/, '');
+  const txHash = body.tx_hash;
+
+  if (!name || !txHash || !txHash.startsWith('0x')) {
+    return c.json({ error: 'name and tx_hash are required' }, 400);
+  }
+
+  if (name.length < 3 || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) {
+    return c.json({ error: 'Invalid .nad name format' }, 400);
+  }
+
+  // ── Check tx_hash not already used ──
+  const txUsedInCredits = await c.env.DB.prepare(
+    'SELECT id FROM credit_transactions WHERE tx_hash = ?'
+  ).bind(txHash).first();
+
+  const txUsedInProxy = await c.env.DB.prepare(
+    'SELECT id FROM proxy_purchases WHERE payment_tx = ?'
+  ).bind(txHash).first();
+
+  if (txUsedInCredits || txUsedInProxy) {
+    return c.json({ error: 'Transaction already used' }, 409);
+  }
+
+  // ── Find pending order or create one on the fly ──
+  let order = await c.env.DB.prepare(
+    "SELECT id, total_wei, price_wei, fee_wei FROM proxy_purchases WHERE wallet = ? AND name = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1"
+  ).bind(auth.wallet, name).first<{ id: string; total_wei: string; price_wei: string; fee_wei: string }>();
+
+  let totalWeiRequired: bigint;
+  let priceWei: bigint;
+  let feeWei: bigint;
+  let orderId: string;
+
+  if (order) {
+    totalWeiRequired = BigInt(order.total_wei);
+    priceWei = BigInt(order.price_wei);
+    feeWei = BigInt(order.fee_wei);
+    orderId = order.id;
+  } else {
+    // No quote — query price on the fly
+    const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+    const queryClient = createPublicClient({ chain: monad, transport: http(rpcUrl) });
+
+    try {
+      const [isAvailable, priceResult] = await Promise.all([
+        queryClient.readContract({
+          address: NNS_REGISTRAR,
+          abi: registrarAbi,
+          functionName: 'available',
+          args: [name],
+        }),
+        queryClient.readContract({
+          address: PRICE_ORACLE_V2,
+          abi: priceOracleAbi,
+          functionName: 'getRegisteringPriceInToken',
+          args: [name, '0x0000000000000000000000000000000000000000'],
+        }),
+      ]);
+
+      if (!isAvailable) {
+        return c.json({ error: `${name}.nad is no longer available` }, 409);
+      }
+      priceWei = priceResult.base;
+    } catch (e: any) {
+      return c.json({ error: `Failed to query NNS: ${e.message}` }, 500);
+    }
+
+    feeWei = (priceWei * 15n) / 100n;
+    totalWeiRequired = priceWei + feeWei;
+    orderId = `pp-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+
+    await c.env.DB.prepare(
+      `INSERT INTO proxy_purchases (id, wallet, name, status, price_wei, fee_wei, total_wei, created_at)
+       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`
+    ).bind(orderId, auth.wallet, name, priceWei.toString(), feeWei.toString(), totalWeiRequired.toString(), Math.floor(Date.now() / 1000)).run();
+  }
+
+  // ── On-chain payment verification (follows credits.ts pattern) ──
+  const client = createPublicClient({
+    chain: monad,
+    transport: http(c.env.MONAD_RPC_URL),
+  });
+
+  let tx, receipt;
+  try {
+    receipt = await client.waitForTransactionReceipt({ hash: txHash as Hex, timeout: 15_000 });
+    tx = await client.getTransaction({ hash: txHash as Hex });
+  } catch {
+    return c.json({ error: 'Transaction not found on Monad. Please wait and try again.' }, 404);
+  }
+
+  if (!tx || !receipt || receipt.status !== 'success') {
+    return c.json({ error: 'Transaction not found or failed on-chain' }, 400);
+  }
+
+  const walletAddress = c.env.WALLET_ADDRESS?.toLowerCase();
+  if (!walletAddress || tx.to?.toLowerCase() !== walletAddress) {
+    return c.json({
+      error: 'Transaction recipient is not the NadMail deposit address',
+      expected: walletAddress,
+    }, 400);
+  }
+
+  // Allow 5% tolerance for price fluctuations
+  const minAcceptable = (totalWeiRequired * 95n) / 100n;
+  if (tx.value < minAcceptable) {
+    return c.json({
+      error: `Insufficient payment. Required: ${formatEther(totalWeiRequired)} MON, received: ${formatEther(tx.value)} MON`,
+      required_wei: totalWeiRequired.toString(),
+      sent_wei: tx.value.toString(),
+    }, 400);
+  }
+
+  // ── Update order → paid ──
+  const paidAt = Math.floor(Date.now() / 1000);
+  await c.env.DB.prepare(
+    "UPDATE proxy_purchases SET status = 'paid', payment_tx = ?, paid_at = ? WHERE id = ?"
+  ).bind(txHash, paidAt, orderId).run();
+
+  // ── Execute NNS purchase ──
+  await c.env.DB.prepare(
+    "UPDATE proxy_purchases SET status = 'purchasing' WHERE id = ?"
+  ).bind(orderId).run();
+
+  let purchaseResult;
+  try {
+    purchaseResult = await executeNnsPurchase(name, auth.wallet, priceWei, c.env);
+  } catch (e: any) {
+    // Purchase failed after payment — mark for refund
+    await c.env.DB.prepare(
+      "UPDATE proxy_purchases SET status = 'refund_needed', error_message = ? WHERE id = ?"
+    ).bind(e.message, orderId).run();
+
+    console.error(`[proxy-purchase] FAILED for ${name} (order ${orderId}): ${e.message}`);
+
+    return c.json({
+      error: 'Purchase failed after payment received',
+      order_id: orderId,
+      status: 'refund_needed',
+      detail: e.message,
+      refund_guidance: 'Your payment has been recorded. The NadMail team will process a refund. Contact support with your order_id if needed.',
+    }, 500);
+  }
+
+  // ── Purchase success ──
+  const completedAt = Math.floor(Date.now() / 1000);
+  await c.env.DB.prepare(
+    "UPDATE proxy_purchases SET status = 'completed', purchase_tx = ?, completed_at = ? WHERE id = ?"
+  ).bind(purchaseResult.txHash, completedAt, orderId).run();
+
+  // ── Auto-upgrade if user has 0x handle ──
+  let autoUpgraded = false;
+  let newJwt: string | null = null;
+  let tokenAddress: string | null = null;
+  let tokenSymbol: string | null = null;
+
+  const account = await c.env.DB.prepare(
+    'SELECT handle, token_address FROM accounts WHERE wallet = ?'
+  ).bind(auth.wallet).first<{ handle: string; token_address: string | null }>();
+
+  if (account && account.handle.startsWith('0x')) {
+    const oldHandle = account.handle;
+
+    // Cascade update handle
+    await c.env.DB.prepare(
+      'UPDATE accounts SET handle = ?, nad_name = ?, previous_handle = ? WHERE wallet = ?'
+    ).bind(name, `${name}.nad`, oldHandle, auth.wallet).run();
+
+    for (const table of ['emails', 'daily_email_counts', 'credit_transactions', 'daily_emobuy_totals']) {
+      await c.env.DB.prepare(
+        `UPDATE ${table} SET handle = ? WHERE handle = ?`
+      ).bind(name, oldHandle).run();
+    }
+
+    // Create meme coin if none exists
+    if (!account.token_address) {
+      try {
+        const result = await createNadFunToken(name, auth.wallet, c.env);
+        tokenAddress = result.tokenAddress;
+        tokenSymbol = name.slice(0, 10).toUpperCase();
+
+        await c.env.DB.prepare(
+          'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'
+        ).bind(tokenAddress, tokenSymbol, result.tx, name).run();
+
+        c.executionCtx.waitUntil(
+          distributeInitialTokens(result.tokenAddress, auth.wallet, c.env),
+        );
+      } catch (e: any) {
+        console.log(`[proxy-purchase] Token creation failed for ${name}: ${e.message}`);
+      }
+    }
+
+    // Issue new JWT
+    newJwt = await createToken({ wallet: auth.wallet, handle: name }, c.env.JWT_SECRET!);
+    autoUpgraded = true;
+
+    await c.env.DB.prepare(
+      'UPDATE proxy_purchases SET auto_upgrade = 1 WHERE id = ?'
+    ).bind(orderId).run();
+
+    console.log(`[proxy-purchase] Auto-upgraded ${oldHandle} → ${name}`);
+  }
+
+  console.log(`[proxy-purchase] SUCCESS: ${name}.nad → ${auth.wallet} (order ${orderId}, tx ${purchaseResult.txHash})`);
+
+  return c.json({
+    success: true,
+    order_id: orderId,
+    name,
+    nad_name: `${name}.nad`,
+    purchase_tx: purchaseResult.txHash,
+    payment_tx: txHash,
+    price_mon: parseFloat(formatEther(priceWei)),
+    fee_mon: parseFloat(formatEther(feeWei)),
+    total_mon: parseFloat(formatEther(tx.value)),
+    auto_upgraded: autoUpgraded,
+    new_handle: autoUpgraded ? name : undefined,
+    new_email: autoUpgraded ? `${name}@${c.env.DOMAIN}` : undefined,
+    new_token: newJwt || undefined,
+    token_address: tokenAddress || account?.token_address || undefined,
+    token_symbol: tokenSymbol || undefined,
+    next_steps: autoUpgraded
+      ? 'Your handle has been upgraded! Use the new token for future API calls.'
+      : account
+        ? `Your .nad name is registered! Call POST /api/register/upgrade-handle { "new_handle": "${name}" } to update your email.`
+        : `Register your NadMail account with POST /api/auth/agent-register { "handle": "${name}" }`,
+  });
+});
+
+/**
+ * GET /api/register/buy-nad-name/status/:orderId
+ * Check proxy purchase order status.
+ *
+ * Auth: Bearer token
+ */
+registerRoutes.get('/buy-nad-name/status/:orderId', authMiddleware(), async (c) => {
+  const auth = c.get('auth');
+  const orderId = c.req.param('orderId');
+
+  const order = await c.env.DB.prepare(
+    'SELECT * FROM proxy_purchases WHERE id = ? AND wallet = ?'
+  ).bind(orderId, auth.wallet).first();
+
+  if (!order) {
+    return c.json({ error: 'Order not found' }, 404);
+  }
+
+  return c.json({ order });
 });
 
 /**

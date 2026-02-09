@@ -91,3 +91,25 @@ CREATE TABLE IF NOT EXISTS free_nad_names (
     claimed_at  INTEGER,
     FOREIGN KEY (claimed_by) REFERENCES accounts(wallet)
 );
+
+-- .nad 名稱代購訂單追蹤
+CREATE TABLE IF NOT EXISTS proxy_purchases (
+    id              TEXT PRIMARY KEY,
+    wallet          TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    price_wei       TEXT NOT NULL,
+    fee_wei         TEXT NOT NULL,
+    total_wei       TEXT NOT NULL,
+    payment_tx      TEXT,
+    purchase_tx     TEXT,
+    error_message   TEXT,
+    auto_upgrade    INTEGER DEFAULT 0,
+    created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+    paid_at         INTEGER,
+    completed_at    INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_proxy_purchases_wallet ON proxy_purchases(wallet);
+CREATE INDEX IF NOT EXISTS idx_proxy_purchases_status ON proxy_purchases(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_purchases_payment_tx ON proxy_purchases(payment_tx);

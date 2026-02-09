@@ -164,7 +164,27 @@ app.get('/api/docs', (c) => {
       'GET /api/register/nad-name-price/:name': {
         description: 'Query real-time .nad name pricing from NNS PriceOracleV2 (public)',
         response: '{ name, available_nns, available_nadmail, price_mon, price_wei, proxy_buy, pricing_reference }',
-        note: 'Returns availability on NNS + NadMail, MON price, and reference pricing table.',
+        note: 'Returns availability on NNS + NadMail, MON price, proxy purchase instructions, and reference pricing table.',
+      },
+      'POST /api/register/buy-nad-name/quote': {
+        auth: 'Bearer token',
+        description: 'Get a quote for proxy-purchasing a .nad name through NadMail',
+        body: '{ name: "alice" }',
+        response: '{ order_id, name, price: { base_mon, fee_mon, total_mon }, payment: { deposit_address, amount_mon }, expires_at }',
+        note: 'Quote is valid for 10 minutes. Send MON to the deposit address, then call the buy endpoint with the tx hash. 15% convenience fee.',
+      },
+      'POST /api/register/buy-nad-name': {
+        auth: 'Bearer token',
+        description: 'Execute .nad name proxy purchase after payment. Auto-upgrades 0x handles.',
+        body: '{ name: "alice", tx_hash: "0x..." }',
+        response: '{ success, order_id, name, purchase_tx, auto_upgraded, new_handle?, new_token? }',
+        note: '15% convenience fee. NFT minted directly to your wallet. If you have a 0x handle, it auto-upgrades + creates meme coin.',
+      },
+      'GET /api/register/buy-nad-name/status/:orderId': {
+        auth: 'Bearer token',
+        description: 'Check proxy purchase order status',
+        response: '{ order: { id, name, status, payment_tx, purchase_tx, ... } }',
+        note: 'Status values: pending, paid, purchasing, completed, failed, refund_needed',
       },
 
       // — Email (token required) —
@@ -246,6 +266,7 @@ app.get('/api/docs', (c) => {
       'Sending email to someone = investing 0.001 MON in their token. You receive the tokens.',
       'Auth errors include a "code" field (nonce_expired, signature_invalid) for programmatic handling',
       'Chain: Monad mainnet (chainId: 143)',
+      'Proxy purchase: Buy .nad names through NadMail with 15% convenience fee. Quote → Pay → Execute in 3 API calls.',
     ],
   });
 });
