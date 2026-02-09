@@ -3,6 +3,7 @@ import { Env } from '../types';
 import { authMiddleware, createToken } from '../auth';
 import { createToken as createNadFunToken, distributeInitialTokens } from '../nadfun';
 import { transferNadName } from '../nns-transfer';
+import { getNadNamesForWallet } from '../nns-lookup';
 
 export const registerRoutes = new Hono<{ Bindings: Env }>();
 
@@ -25,6 +26,51 @@ registerRoutes.get('/free-names', async (c) => {
     names,
     available_count: names.filter((n) => n.available).length,
     total: names.length,
+  });
+});
+
+/**
+ * GET /api/register/nad-names/:address
+ * Public — returns .nad names owned by a wallet, with availability status.
+ */
+registerRoutes.get('/nad-names/:address', async (c) => {
+  const address = c.req.param('address');
+
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+    return c.json({ error: 'Invalid wallet address' }, 400);
+  }
+
+  const wallet = address.toLowerCase();
+  const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+
+  let nadNames: string[];
+  try {
+    nadNames = await getNadNamesForWallet(wallet, rpcUrl);
+  } catch (e: any) {
+    console.log(`[register] NNS lookup failed for ${wallet}: ${e.message}`);
+    return c.json({ wallet, names: [], error: 'Failed to query NNS contract' });
+  }
+
+  if (nadNames.length === 0) {
+    return c.json({ wallet, names: [] });
+  }
+
+  // Check DB availability for each name
+  const namesWithStatus = await Promise.all(
+    nadNames.map(async (name) => {
+      const existing = await c.env.DB.prepare(
+        'SELECT handle FROM accounts WHERE handle = ?'
+      ).bind(name.toLowerCase()).first();
+      return {
+        name: name.toLowerCase(),
+        available: !existing,
+      };
+    }),
+  );
+
+  return c.json({
+    wallet,
+    names: namesWithStatus,
   });
 });
 
@@ -60,18 +106,39 @@ registerRoutes.post('/', authMiddleware(), async (c) => {
   let shouldCreateToken = false;
   let nftTransferTx: string | null = null;
 
+  let isFreeName = false;
+  let isOwnedNad = false;
+
   if (requestedHandle) {
-    // Must be a free .nad name
+    // First check free .nad name pool
     const freeName = await c.env.DB.prepare(
       'SELECT name, claimed_by FROM free_nad_names WHERE name = ?'
     ).bind(requestedHandle).first<{ name: string; claimed_by: string | null }>();
 
-    if (!freeName) {
-      return c.json({ error: 'This name is not available for claiming' }, 400);
-    }
-
-    if (freeName.claimed_by !== null) {
-      return c.json({ error: 'This name has already been claimed' }, 409);
+    if (freeName) {
+      if (freeName.claimed_by !== null) {
+        return c.json({ error: 'This name has already been claimed' }, 409);
+      }
+      isFreeName = true;
+    } else {
+      // Not in free pool — check if user owns this .nad name on-chain
+      const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+      try {
+        const ownedNames = await getNadNamesForWallet(auth.wallet, rpcUrl);
+        const ownsName = ownedNames.some(
+          (n) => n.toLowerCase() === requestedHandle,
+        );
+        if (!ownsName) {
+          return c.json({
+            error: 'You do not own this .nad name',
+            hint: 'You can claim a free name, use your own .nad name, or register with 0x address',
+          }, 403);
+        }
+        isOwnedNad = true;
+      } catch (e: any) {
+        console.log(`[register] NNS verification failed: ${e.message}`);
+        return c.json({ error: 'Failed to verify .nad name ownership' }, 500);
+      }
     }
 
     handle = requestedHandle;
@@ -99,8 +166,8 @@ registerRoutes.post('/', authMiddleware(), async (c) => {
      VALUES (?, ?, ?, ?, 'free')`
   ).bind(handle, auth.wallet, nadName, Math.floor(Date.now() / 1000)).run();
 
-  // Claim free name + transfer NFT (after account exists for FK constraint)
-  if (requestedHandle) {
+  // Claim free name + transfer NFT (only for free pool names — user-owned .nad names already have the NFT)
+  if (isFreeName) {
     await c.env.DB.prepare(
       'UPDATE free_nad_names SET claimed_by = ?, claimed_at = ? WHERE name = ? AND claimed_by IS NULL'
     ).bind(auth.wallet, Math.floor(Date.now() / 1000), requestedHandle).run();
@@ -212,6 +279,140 @@ registerRoutes.post('/retry-token', authMiddleware(), async (c) => {
   } catch (e: any) {
     return c.json({ error: `Token creation failed: ${e.message}` }, 500);
   }
+});
+
+/**
+ * POST /api/register/upgrade-handle
+ * Upgrade a 0x handle to a .nad name handle.
+ * Requires on-chain ownership verification.
+ *
+ * Body: { new_handle: "alice" }
+ */
+registerRoutes.post('/upgrade-handle', authMiddleware(), async (c) => {
+  const auth = c.get('auth');
+
+  const body = await c.req.json<{ new_handle: string }>().catch(() => ({ new_handle: '' }));
+  const newHandle = body.new_handle?.toLowerCase().trim();
+
+  if (!newHandle || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(newHandle)) {
+    return c.json({ error: 'Invalid handle format' }, 400);
+  }
+
+  // Get current account
+  const account = await c.env.DB.prepare(
+    'SELECT handle, nad_name, token_address FROM accounts WHERE wallet = ?'
+  ).bind(auth.wallet).first<{ handle: string; nad_name: string | null; token_address: string | null }>();
+
+  if (!account) {
+    return c.json({ error: 'Account not found' }, 404);
+  }
+
+  const oldHandle = account.handle;
+
+  // Must be upgrading from a 0x handle
+  if (!oldHandle.startsWith('0x')) {
+    return c.json({
+      error: 'Your account already has a .nad name handle',
+      current_handle: oldHandle,
+    }, 400);
+  }
+
+  // Check the new handle is not already taken
+  const handleTaken = await c.env.DB.prepare(
+    'SELECT handle FROM accounts WHERE handle = ?'
+  ).bind(newHandle).first();
+
+  if (handleTaken) {
+    return c.json({ error: 'This handle is already taken' }, 409);
+  }
+
+  // Verify on-chain ownership
+  const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+  let ownedNames: string[];
+  try {
+    ownedNames = await getNadNamesForWallet(auth.wallet, rpcUrl);
+  } catch (e: any) {
+    console.log(`[upgrade] NNS lookup failed for ${auth.wallet}: ${e.message}`);
+    return c.json({ error: 'Failed to verify .nad name ownership' }, 500);
+  }
+
+  const ownsName = ownedNames.some((n) => n.toLowerCase() === newHandle);
+  if (!ownsName) {
+    return c.json({
+      error: `You do not own ${newHandle}.nad`,
+      owned_names: ownedNames.map((n) => n.toLowerCase()),
+    }, 403);
+  }
+
+  // ── Cascade update handle across all tables ──
+  const now = Math.floor(Date.now() / 1000);
+
+  // 1. Update accounts (set new handle, nad_name, previous_handle)
+  await c.env.DB.prepare(
+    'UPDATE accounts SET handle = ?, nad_name = ?, previous_handle = ? WHERE wallet = ?'
+  ).bind(newHandle, `${newHandle}.nad`, oldHandle, auth.wallet).run();
+
+  // 2. Update emails
+  await c.env.DB.prepare(
+    'UPDATE emails SET handle = ? WHERE handle = ?'
+  ).bind(newHandle, oldHandle).run();
+
+  // 3. Update daily_email_counts
+  await c.env.DB.prepare(
+    'UPDATE daily_email_counts SET handle = ? WHERE handle = ?'
+  ).bind(newHandle, oldHandle).run();
+
+  // 4. Update credit_transactions
+  await c.env.DB.prepare(
+    'UPDATE credit_transactions SET handle = ? WHERE handle = ?'
+  ).bind(newHandle, oldHandle).run();
+
+  // 5. Update daily_emobuy_totals
+  await c.env.DB.prepare(
+    'UPDATE daily_emobuy_totals SET handle = ? WHERE handle = ?'
+  ).bind(newHandle, oldHandle).run();
+
+  // ── Create nad.fun token ──
+  let tokenAddress: string | null = null;
+  let tokenSymbol: string | null = null;
+  let tokenCreateTx: string | null = null;
+
+  if (!account.token_address) {
+    try {
+      const result = await createNadFunToken(newHandle, auth.wallet, c.env);
+      tokenAddress = result.tokenAddress;
+      tokenSymbol = newHandle.slice(0, 10).toUpperCase();
+      tokenCreateTx = result.tx;
+
+      c.executionCtx.waitUntil(
+        distributeInitialTokens(result.tokenAddress, auth.wallet, c.env),
+      );
+
+      await c.env.DB.prepare(
+        'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'
+      ).bind(tokenAddress, tokenSymbol, tokenCreateTx, newHandle).run();
+    } catch (e: any) {
+      console.log(`[upgrade] Token creation failed for ${newHandle}: ${e.message}`);
+    }
+  }
+
+  // ── Issue new JWT ──
+  const secret = c.env.JWT_SECRET!;
+  const newToken = await createToken({ wallet: auth.wallet, handle: newHandle }, secret);
+
+  console.log(`[upgrade] ${oldHandle} → ${newHandle} for wallet ${auth.wallet}`);
+
+  return c.json({
+    success: true,
+    old_handle: oldHandle,
+    new_handle: newHandle,
+    email: `${newHandle}@${c.env.DOMAIN}`,
+    nad_name: `${newHandle}.nad`,
+    token: newToken,
+    token_address: tokenAddress || account.token_address,
+    token_symbol: tokenSymbol || null,
+    token_create_tx: tokenCreateTx,
+  });
 });
 
 /**

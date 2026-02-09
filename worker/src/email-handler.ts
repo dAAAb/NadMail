@@ -39,6 +39,13 @@ export async function handleIncomingEmail(
     ).bind(handle).first<{ handle: string; webhook_url: string | null }>();
   }
 
+  // previous_handle fallback：升級後的舊 handle 仍可收信
+  if (!account) {
+    account = await env.DB.prepare(
+      'SELECT handle, webhook_url FROM accounts WHERE previous_handle = ?'
+    ).bind(handle).first<{ handle: string; webhook_url: string | null }>();
+  }
+
   if (!account) {
     // 外部來信不預存，直接拒絕
     message.setReject(`Mailbox not found: ${toAddr}`);

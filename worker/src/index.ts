@@ -140,6 +140,19 @@ app.get('/api/docs', (c) => {
         description: 'Register a @nadmail.ai email + auto-create meme coin on nad.fun',
         body: '{ handle: "alice" }',
         response: '{ success, email, handle, wallet, token_address, token_symbol }',
+        note: 'handle can be a free pool name or your own .nad name (verified on-chain). Omit handle for 0x fallback.',
+      },
+      'GET /api/register/nad-names/:address': {
+        description: 'List .nad names owned by a wallet with availability status (public)',
+        response: '{ wallet, names: [{ name, available }] }',
+        note: 'Queries NNS contract on-chain. available=false means the name is already taken by another NadMail account.',
+      },
+      'POST /api/register/upgrade-handle': {
+        auth: 'Bearer token',
+        description: 'Upgrade a 0x handle to a .nad name handle',
+        body: '{ new_handle: "alice" }',
+        response: '{ success, old_handle, new_handle, email, nad_name, token, token_address, token_symbol }',
+        note: 'Requires on-chain .nad name ownership. Creates meme coin if none exists. Issues new JWT.',
       },
       'GET /api/register/check/:address': {
         description: 'Preview what email a wallet would get (public, no auth)',

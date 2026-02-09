@@ -108,6 +108,16 @@ sendRoutes.post('/', async (c) => {
       }
     }
 
+    // previous_handle fallback (for upgraded accounts)
+    if (!recipient) {
+      recipient = await c.env.DB.prepare(
+        'SELECT handle, token_address, token_symbol FROM accounts WHERE previous_handle = ?'
+      ).bind(recipientHandle).first<{ handle: string; token_address: string | null; token_symbol: string | null }>();
+      if (recipient) {
+        recipientHandle = recipient.handle;
+      }
+    }
+
     if (!recipient) {
       return c.json({ error: `Recipient not found: ${to}` }, 404);
     }

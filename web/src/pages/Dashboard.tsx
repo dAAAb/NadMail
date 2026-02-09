@@ -199,6 +199,170 @@ function cleanSnippet(snippet: string | null): string {
   return clean;
 }
 
+// ─── Upgrade Banner (0x → .nad) ─────────────────────────
+
+interface NadNameInfo {
+  name: string;
+  available: boolean;
+}
+
+function UpgradeBanner({
+  auth,
+  setAuth,
+}: {
+  auth: AuthState;
+  setAuth: (a: AuthState) => void;
+}) {
+  const [nadNames, setNadNames] = useState<NadNameInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [upgrading, setUpgrading] = useState(false);
+  const [error, setError] = useState('');
+  const [dismissed, setDismissed] = useState(() => sessionStorage.getItem('nadmail_upgrade_dismissed') === 'true');
+  const [success, setSuccess] = useState(false);
+  const [showConfetti, setShowConfetti] = useState(false);
+
+  useEffect(() => {
+    if (!auth.handle?.startsWith('0x') || dismissed) {
+      setLoading(false);
+      return;
+    }
+    fetch(`${API_BASE}/api/register/nad-names/${auth.wallet}`)
+      .then((r) => r.json())
+      .then((data) => {
+        const available = (data.names || []).filter((n: NadNameInfo) => n.available);
+        setNadNames(available);
+        if (available.length === 1) setSelectedName(available[0].name);
+      })
+      .catch(() => setNadNames([]))
+      .finally(() => setLoading(false));
+  }, [auth.wallet, auth.handle, dismissed]);
+
+  if (loading || dismissed || !auth.handle?.startsWith('0x') || nadNames.length === 0) {
+    return null;
+  }
+
+  async function handleUpgrade() {
+    if (!selectedName) return;
+    setUpgrading(true);
+    setError('');
+    try {
+      const res = await apiFetch('/api/register/upgrade-handle', auth.token, {
+        method: 'POST',
+        body: JSON.stringify({ new_handle: selectedName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Upgrade failed');
+
+      setSuccess(true);
+      setShowConfetti(true);
+      setTimeout(() => setShowConfetti(false), 4000);
+
+      // Update auth state with new handle + token
+      setAuth({
+        ...auth,
+        handle: data.new_handle,
+        token: data.token,
+        token_address: data.token_address || auth.token_address,
+        token_symbol: data.token_symbol || auth.token_symbol,
+      });
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setUpgrading(false);
+    }
+  }
+
+  function handleDismiss() {
+    setDismissed(true);
+    sessionStorage.setItem('nadmail_upgrade_dismissed', 'true');
+  }
+
+  if (success) {
+    return (
+      <>
+        {showConfetti && <ConfettiEffect />}
+        <div className="bg-green-900/20 border border-green-700/50 rounded-xl p-6 mb-6 text-center">
+          <div className="text-3xl mb-2">&#127881;</div>
+          <h3 className="text-xl font-bold text-green-400 mb-1">Upgraded!</h3>
+          <p className="text-gray-300">
+            Your email is now <span className="text-nad-purple font-mono font-bold">{selectedName}@nadmail.ai</span>
+          </p>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="bg-purple-900/20 border border-purple-700/50 rounded-xl p-6 mb-6">
+      <div className="flex items-start justify-between mb-3">
+        <div>
+          <h3 className="font-bold text-lg mb-1">
+            Upgrade your email!
+          </h3>
+          <p className="text-gray-400 text-sm">
+            You own {nadNames.length === 1 ? 'a' : nadNames.length} .nad name{nadNames.length > 1 ? 's' : ''}! Upgrade from your 0x address to a memorable email + get a meme coin.
+          </p>
+        </div>
+        <button onClick={handleDismiss} className="text-gray-500 hover:text-gray-300 text-xl ml-4" title="Dismiss">&times;</button>
+      </div>
+
+      <div className="bg-nad-dark/50 rounded-lg p-4 mb-4">
+        <div className="flex items-center gap-3 text-sm mb-2">
+          <span className="text-gray-500">Now:</span>
+          <span className="text-gray-400 font-mono">{truncateEmail(auth.handle!)}</span>
+          <span className="text-gray-600 text-xs">(no token)</span>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <span className="text-gray-500">After:</span>
+          <span className="text-nad-purple font-mono font-bold">
+            {selectedName ? `${selectedName}@nadmail.ai` : '—'}
+          </span>
+          {selectedName && (
+            <span className="text-purple-400 text-xs font-mono">${selectedName.toUpperCase()} token</span>
+          )}
+        </div>
+      </div>
+
+      {nadNames.length > 1 && (
+        <div className="flex flex-wrap gap-2 mb-4">
+          {nadNames.map((n) => (
+            <button
+              key={n.name}
+              onClick={() => setSelectedName(n.name)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-mono transition border ${
+                selectedName === n.name
+                  ? 'border-nad-purple bg-purple-900/30 text-nad-purple'
+                  : 'border-gray-700 bg-nad-dark text-gray-300 hover:border-purple-600'
+              }`}
+            >
+              {n.name}.nad
+            </button>
+          ))}
+        </div>
+      )}
+
+      {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+
+      <div className="flex gap-3">
+        <button
+          onClick={handleUpgrade}
+          disabled={upgrading || !selectedName}
+          className="bg-nad-purple text-white px-6 py-2 rounded-lg font-medium hover:bg-purple-600 transition disabled:opacity-50"
+        >
+          {upgrading ? 'Upgrading...' : 'Upgrade Now'}
+        </button>
+        <button
+          onClick={handleDismiss}
+          className="text-gray-500 hover:text-gray-300 text-sm transition"
+        >
+          Maybe Later
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Dashboard ──────────────────────────────────────
 
 export default function Dashboard() {
@@ -303,6 +467,9 @@ export default function Dashboard() {
 
       {/* Main content */}
       <main className="flex-1 p-8 overflow-y-auto">
+        {auth.handle?.startsWith('0x') && (
+          <UpgradeBanner auth={auth} setAuth={setAuth} />
+        )}
         <Routes>
           <Route index element={<Inbox auth={auth} folder="inbox" />} />
           <Route path="sent" element={<Inbox auth={auth} folder="sent" />} />
@@ -475,21 +642,24 @@ function RegisterEmail({
   const [claimedHasToken, setClaimedHasToken] = useState(false);
 
   const [freeNames, setFreeNames] = useState<FreeName[]>([]);
+  const [ownedNames, setOwnedNames] = useState<NadNameInfo[]>([]);
   const [loadingNames, setLoadingNames] = useState(true);
   const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [nameSource, setNameSource] = useState<'free' | 'owned' | null>(null);
 
   const shortAddr = auth.wallet ? `${auth.wallet.slice(0, 6)}...${auth.wallet.slice(-4)}` : '';
 
-  // Load free names on mount
+  // Load free names + owned .nad names on mount
   useEffect(() => {
-    fetch(`${API_BASE}/api/register/free-names`)
-      .then((r) => r.json())
-      .then((data) => {
-        setFreeNames(data.names || []);
-      })
-      .catch(() => setFreeNames([]))
-      .finally(() => setLoadingNames(false));
-  }, []);
+    Promise.all([
+      fetch(`${API_BASE}/api/register/free-names`).then((r) => r.json()).catch(() => ({ names: [] })),
+      fetch(`${API_BASE}/api/register/nad-names/${auth.wallet}`).then((r) => r.json()).catch(() => ({ names: [] })),
+    ]).then(([freeData, ownedData]) => {
+      setFreeNames(freeData.names || []);
+      const available = (ownedData.names || []).filter((n: NadNameInfo) => n.available);
+      setOwnedNames(available);
+    }).finally(() => setLoadingNames(false));
+  }, [auth.wallet]);
 
   async function handleRegister(handle?: string) {
     setSubmitting(true);
@@ -549,8 +719,10 @@ function RegisterEmail({
     );
   }
 
-  const availableNames = freeNames.filter((n) => n.available);
-  const hasAvailable = availableNames.length > 0;
+  const availableFreeNames = freeNames.filter((n) => n.available);
+  const hasFreeNames = availableFreeNames.length > 0;
+  const hasOwnedNames = ownedNames.length > 0;
+  const hasAnyNames = hasFreeNames || hasOwnedNames;
 
   // Name picker screen
   return (
@@ -559,9 +731,11 @@ function RegisterEmail({
         <div className="text-center mb-6">
           <h1 className="text-2xl font-bold mb-2">Pick Your .nad Name</h1>
           <p className="text-gray-400">
-            {hasAvailable
-              ? `Choose a legendary name — free! (${availableNames.length} left)`
-              : 'All free names have been claimed.'}
+            {hasOwnedNames
+              ? 'Use your own .nad name or claim a free one!'
+              : hasFreeNames
+              ? `Choose a legendary name — free! (${availableFreeNames.length} left)`
+              : 'Get your NadMail email address'}
           </p>
           <p className="text-gray-600 text-xs mt-1">
             Wallet: <span className="text-gray-400">{shortAddr}</span>
@@ -570,49 +744,91 @@ function RegisterEmail({
 
         {loadingNames ? (
           <div className="text-center py-8 text-gray-500">Loading names...</div>
-        ) : hasAvailable ? (
+        ) : hasAnyNames ? (
           <>
-            {/* Name grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
-              {freeNames.map((n) => {
-                const isSelected = selectedName === n.name;
-                const isAvailable = n.available;
+            {/* Owned .nad names section */}
+            {hasOwnedNames && (
+              <div className="mb-6">
+                <h3 className="text-sm font-bold text-gray-300 mb-3 flex items-center gap-2">
+                  Your .nad Names
+                  <span className="text-xs font-normal text-gray-500">({ownedNames.length})</span>
+                </h3>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {ownedNames.map((n) => {
+                    const isSelected = selectedName === n.name && nameSource === 'owned';
+                    return (
+                      <button
+                        key={`owned-${n.name}`}
+                        onClick={() => { setSelectedName(n.name); setNameSource('owned'); }}
+                        className={`rounded-lg p-3 text-left transition border ${
+                          isSelected
+                            ? 'border-nad-purple bg-purple-900/30 ring-2 ring-nad-purple'
+                            : 'border-purple-700/50 bg-purple-900/10 hover:border-purple-600 hover:bg-purple-900/20 cursor-pointer'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-mono font-bold text-sm text-nad-purple">{n.name}.nad</span>
+                          <span className="text-purple-400 text-xs">Yours</span>
+                        </div>
+                        <div className="text-xs text-gray-500">Use your own name</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
-                return (
-                  <button
-                    key={n.name}
-                    onClick={() => isAvailable && setSelectedName(n.name)}
-                    disabled={!isAvailable}
-                    className={`rounded-lg p-3 text-left transition border ${
-                      isSelected
-                        ? 'border-nad-purple bg-purple-900/30 ring-2 ring-nad-purple'
-                        : isAvailable
-                        ? 'border-gray-700 bg-nad-dark hover:border-purple-600 hover:bg-purple-900/10 cursor-pointer'
-                        : 'border-gray-800 bg-gray-900/50 opacity-50 cursor-not-allowed'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className={`font-mono font-bold text-sm ${
-                        isAvailable ? 'text-nad-purple' : 'text-gray-600 line-through'
-                      }`}>
-                        {n.name}.nad
-                      </span>
-                      {isAvailable ? (
-                        <span className="text-green-500 text-xs">Free</span>
-                      ) : (
-                        <span className="text-gray-600 text-xs">Claimed</span>
-                      )}
-                    </div>
-                    <div className={`text-xs ${isAvailable ? 'text-gray-500' : 'text-gray-700'}`}>
-                      {n.description.split(' — ')[0]}
-                    </div>
-                    <div className={`text-[10px] mt-1 ${isAvailable ? 'text-gray-600' : 'text-gray-700'}`}>
-                      {n.description.split(' — ')[1] || ''}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+            {/* Free names section */}
+            {hasFreeNames && (
+              <div className="mb-6">
+                {hasOwnedNames && (
+                  <h3 className="text-sm font-bold text-gray-300 mb-3 flex items-center gap-2">
+                    Free Names
+                    <span className="text-xs font-normal text-gray-500">({availableFreeNames.length} available)</span>
+                  </h3>
+                )}
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {freeNames.map((n) => {
+                    const isSelected = selectedName === n.name && nameSource === 'free';
+                    const isAvailable = n.available;
+
+                    return (
+                      <button
+                        key={n.name}
+                        onClick={() => { if (isAvailable) { setSelectedName(n.name); setNameSource('free'); } }}
+                        disabled={!isAvailable}
+                        className={`rounded-lg p-3 text-left transition border ${
+                          isSelected
+                            ? 'border-nad-purple bg-purple-900/30 ring-2 ring-nad-purple'
+                            : isAvailable
+                            ? 'border-gray-700 bg-nad-dark hover:border-purple-600 hover:bg-purple-900/10 cursor-pointer'
+                            : 'border-gray-800 bg-gray-900/50 opacity-50 cursor-not-allowed'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className={`font-mono font-bold text-sm ${
+                            isAvailable ? 'text-nad-purple' : 'text-gray-600 line-through'
+                          }`}>
+                            {n.name}.nad
+                          </span>
+                          {isAvailable ? (
+                            <span className="text-green-500 text-xs">Free</span>
+                          ) : (
+                            <span className="text-gray-600 text-xs">Claimed</span>
+                          )}
+                        </div>
+                        <div className={`text-xs ${isAvailable ? 'text-gray-500' : 'text-gray-700'}`}>
+                          {n.description.split(' — ')[0]}
+                        </div>
+                        <div className={`text-[10px] mt-1 ${isAvailable ? 'text-gray-600' : 'text-gray-700'}`}>
+                          {n.description.split(' — ')[1] || ''}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Selected preview */}
             {selectedName && (
@@ -663,11 +879,33 @@ function RegisterEmail({
           </>
         ) : (
           <>
-            {/* All names claimed — 0x fallback */}
+            {/* No free names + no owned names — guide to buy */}
+            <div className="bg-nad-dark rounded-lg p-6 mb-4 border border-gray-700 text-center">
+              <p className="text-gray-400 mb-2">All free names have been claimed!</p>
+              <p className="text-gray-500 text-sm mb-4">
+                Get your own .nad name to unlock a memorable email + meme coin.
+              </p>
+              <a
+                href="https://nad.domains"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block bg-purple-800/50 text-purple-300 px-6 py-2 rounded-lg hover:bg-purple-800/70 transition text-sm font-medium border border-purple-700/50"
+              >
+                Buy a .nad name &rarr;
+              </a>
+              <p className="text-gray-600 text-xs mt-3">
+                After buying, come back and refresh this page to use your name.
+              </p>
+            </div>
+
+            <div className="relative my-4">
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-700"></div></div>
+              <div className="relative flex justify-center text-xs"><span className="bg-nad-gray px-3 text-gray-500">or</span></div>
+            </div>
+
             <div className="bg-nad-dark rounded-lg p-4 mb-4 border border-gray-700 text-center">
-              <p className="text-gray-400 mb-2">All legendary names have been claimed!</p>
               <p className="text-gray-500 text-sm">
-                You'll get <span className="text-gray-300 font-mono">{auth.wallet.toLowerCase().slice(0, 10)}@nadmail.ai</span>
+                Use your wallet address: <span className="text-gray-300 font-mono">{auth.wallet.toLowerCase().slice(0, 10)}@nadmail.ai</span>
               </p>
             </div>
 
@@ -676,9 +914,9 @@ function RegisterEmail({
             <button
               onClick={() => handleRegister()}
               disabled={submitting}
-              className="w-full bg-nad-purple text-white py-3 rounded-lg font-medium hover:bg-purple-600 transition disabled:opacity-50 text-lg"
+              className="w-full bg-gray-700 text-white py-3 rounded-lg font-medium hover:bg-gray-600 transition disabled:opacity-50"
             >
-              {submitting ? 'Creating...' : 'Get Wallet Email'}
+              {submitting ? 'Creating...' : 'Get Wallet Email (no token)'}
             </button>
           </>
         )}

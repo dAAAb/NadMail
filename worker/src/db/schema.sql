@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     handle          TEXT PRIMARY KEY,
     wallet          TEXT NOT NULL UNIQUE,
     nad_name        TEXT,
+    previous_handle TEXT,
     token_address   TEXT,
     token_symbol    TEXT,
     token_create_tx TEXT,
