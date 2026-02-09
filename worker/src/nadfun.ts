@@ -39,16 +39,22 @@ export async function generateAvatarSvg(handle: string): Promise<string> {
   const hue1 = hash % 360;
   const hue2 = (hash * 7) % 360;
 
-  // Fetch dicebear robot SVG and embed inline (external URLs don't work in uploaded SVGs)
-  let robotImage = '';
+  // Fetch dicebear robot SVG and inline its elements directly.
+  // We can't use <image href="data:image/svg+xml;base64,..."> because browsers
+  // block SVG-in-SVG when the outer SVG is loaded via <img> tag (security).
+  let robotInline = '';
   try {
     const res = await fetch(`https://api.dicebear.com/7.x/bottts/svg?seed=${handle}`);
     if (res.ok) {
       const svgText = await res.text();
-      // Strip metadata (contains unicode chars that break btoa) then base64 encode
-      const svgClean = svgText.replace(/<metadata[^>]*>[\s\S]*?<\/metadata>/g, '');
-      const base64 = btoa(svgClean);
-      robotImage = `<image href="data:image/svg+xml;base64,${base64}" width="512" height="512" clip-path="url(#clip)" opacity="0.85"/>`;
+      const cleaned = svgText.replace(/<metadata[^>]*>[\s\S]*?<\/metadata>/g, '');
+      // Extract inner SVG content (between <svg ...> and </svg>)
+      const innerMatch = cleaned.match(/<svg[^>]*>([\s\S]*)<\/svg>/);
+      if (innerMatch) {
+        // Scale from dicebear's 180x180 viewBox to our 512x512
+        const scale = (512 / 180).toFixed(4);
+        robotInline = `<g clip-path="url(#clip)" opacity="0.85"><g transform="scale(${scale})" fill="none" shape-rendering="auto">${innerMatch[1]}</g></g>`;
+      }
     }
   } catch (e) {
     // Fallback: gradient-only background
@@ -63,7 +69,7 @@ export async function generateAvatarSvg(handle: string): Promise<string> {
     <clipPath id="clip"><rect width="512" height="512" rx="64"/></clipPath>
   </defs>
   <rect width="512" height="512" rx="64" fill="url(#g)"/>
-  ${robotImage}
+  ${robotInline}
 </svg>`;
 }
 
