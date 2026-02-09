@@ -158,8 +158,8 @@ authRoutes.post('/agent-register', async (c) => {
   try {
     const tokenResult = await createNadFunToken(handle, wallet, c.env);
     tokenAddress = tokenResult.tokenAddress;
-    const isWalletHandle = /^0x[a-f0-9]{40}$/.test(handle);
-    tokenSymbol = isWalletHandle ? handle.slice(0, 10).toUpperCase() : handle.toUpperCase();
+    // nad.fun enforces max 10 chars for symbol
+    tokenSymbol = handle.slice(0, 10).toUpperCase();
 
     await c.env.DB.prepare(
       'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'
