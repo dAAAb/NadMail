@@ -178,6 +178,82 @@ export async function microBuy(
 }
 
 // ════════════════════════════════════════════
+// Micro-buy with price data（簽名檔用）
+// ════════════════════════════════════════════
+
+export interface MicroBuyResult {
+  tx: string;
+  tokensBought: string;       // e.g. "142.5"
+  priceBeforeMon: string;     // MON per token, before buy
+  priceAfterMon: string;      // MON per token, after buy
+  priceChangePercent: string; // e.g. "+2.8"
+  tokenSymbol: string;
+  tokenAddress: string;
+}
+
+export async function microBuyWithPrice(
+  tokenAddress: string,
+  tokenSymbol: string,
+  senderWallet: string,
+  env: Env,
+): Promise<MicroBuyResult> {
+  const sdk = getSDK(env);
+  const token = tokenAddress as Address;
+
+  // 1. Pre-buy quote: how many tokens will 0.001 MON buy?
+  const { amount: tokensBefore } = await sdk.getAmountOut(token, MICRO_BUY_AMOUNT, true);
+  // price = MON spent / tokens received
+  const priceBefore = tokensBefore > 0n
+    ? Number(MICRO_BUY_AMOUNT) / Number(tokensBefore)
+    : 0;
+
+  // 2. Execute buy
+  const tx = await sdk.simpleBuy({
+    token,
+    amountIn: MICRO_BUY_AMOUNT,
+    slippagePercent: 5,
+    to: senderWallet as Address,
+  });
+
+  // 3. Post-buy quote: same MON amount now buys fewer tokens (price went up)
+  const { amount: tokensAfter } = await sdk.getAmountOut(token, MICRO_BUY_AMOUNT, true);
+  const priceAfter = tokensAfter > 0n
+    ? Number(MICRO_BUY_AMOUNT) / Number(tokensAfter)
+    : 0;
+
+  // 4. Calculate change
+  const changePercent = priceBefore > 0
+    ? ((priceAfter - priceBefore) / priceBefore) * 100
+    : 0;
+
+  return {
+    tx,
+    tokensBought: formatTokenAmount(tokensBefore),
+    priceBeforeMon: formatPrice(priceBefore),
+    priceAfterMon: formatPrice(priceAfter),
+    priceChangePercent: changePercent >= 0 ? `+${changePercent.toFixed(2)}` : changePercent.toFixed(2),
+    tokenSymbol,
+    tokenAddress,
+  };
+}
+
+function formatPrice(price: number): string {
+  if (price === 0) return '0';
+  if (price >= 0.01) return price.toFixed(6);
+  // For very small prices, use significant digits
+  return price.toPrecision(4);
+}
+
+function formatTokenAmount(amount: bigint): string {
+  const f = formatEther(amount);
+  const n = parseFloat(f);
+  if (n >= 1000) return n.toFixed(1);
+  if (n >= 1) return n.toFixed(2);
+  if (n >= 0.01) return n.toFixed(4);
+  return n.toPrecision(4);
+}
+
+// ════════════════════════════════════════════
 // 價格查詢
 // ════════════════════════════════════════════
 

@@ -3,16 +3,17 @@ import { EmailMessage } from 'cloudflare:email';
 import { createMimeMessage } from 'mimetext';
 import { Env } from '../types';
 import { authMiddleware } from '../auth';
-import { microBuy } from '../nadfun';
+import { microBuyWithPrice, type MicroBuyResult } from '../nadfun';
+import {
+  buildTextSignature,
+  buildHtmlSignature,
+  buildTextSignatureWithPrice,
+  buildHtmlSignatureWithPrice,
+} from '../signature';
 
 export const sendRoutes = new Hono<{ Bindings: Env }>();
 
 sendRoutes.use('/*', authMiddleware());
-
-// ── Email Signature (appended for free-tier users) ──
-const TEXT_SIGNATURE = `\n\n--\nSent via NadMail.ai — Your Email is Your Meme Coin\nhttps://nadmail.ai`;
-
-const HTML_SIGNATURE = `<br><br><div style="border-top:1px solid #333;padding-top:12px;margin-top:24px;font-size:12px;color:#888;font-family:sans-serif;">Sent via <a href="https://nadmail.ai" style="color:#7B3FE4;text-decoration:none;font-weight:bold;">NadMail.ai</a> — Your Email is Your Meme Coin</div>`;
 
 const DAILY_EMAIL_LIMIT = 10;
 
@@ -26,14 +27,8 @@ interface Attachment {
  * POST /api/send
  * Send email + trigger micro-buy for internal emails
  *
- * Body: {
- *   to: string,
- *   subject: string,
- *   body: string,
- *   html?: string,
- *   in_reply_to?: string,
- *   attachments?: Attachment[],
- * }
+ * Flow (internal): validate → micro-buy → build MIME with price sig → store
+ * Flow (external): validate → build MIME with static sig → send via Resend → store
  */
 sendRoutes.post('/', async (c) => {
   const auth = c.get('auth');
@@ -85,53 +80,9 @@ sendRoutes.post('/', async (c) => {
   ).bind(auth.handle).first<{ tier: string }>();
   const isPro = acctTier?.tier === 'pro';
 
-  // Append signature for free-tier users
-  const finalBody = isPro ? body : body + TEXT_SIGNATURE;
-  const finalHtml = html ? (isPro ? html : html + HTML_SIGNATURE) : undefined;
-
-  // Build MIME message
-  const msg = createMimeMessage();
-  msg.setSender({ name: auth.handle, addr: fromAddr });
-  msg.setRecipient(to);
-  msg.setSubject(subject);
-  msg.addMessage({ contentType: 'text/plain', data: finalBody });
-  if (finalHtml) {
-    msg.addMessage({ contentType: 'text/html', data: finalHtml });
-  }
-  msg.setHeader('X-NadMail-Agent', auth.handle);
-  msg.setHeader('X-NadMail-Wallet', auth.wallet);
-
-  // Reply headers
-  if (in_reply_to) {
-    const origEmail = await c.env.DB.prepare(
-      'SELECT id, from_addr, subject FROM emails WHERE id = ? AND handle = ?'
-    ).bind(in_reply_to, auth.handle).first<{ id: string; from_addr: string; subject: string }>();
-
-    if (origEmail) {
-      const messageId = `<${origEmail.id}@${c.env.DOMAIN}>`;
-      msg.setHeader('In-Reply-To', messageId);
-      msg.setHeader('References', messageId);
-    }
-  }
-
-  // Attachments
-  if (attachments && attachments.length > 0) {
-    for (const att of attachments) {
-      msg.addAttachment({
-        filename: att.filename,
-        contentType: att.content_type,
-        data: att.data,
-      });
-    }
-  }
-
-  const rawMime = msg.asRaw();
-  const snippet = body.slice(0, 200);
-
-  // Internal vs external routing
   const isInternal = to.toLowerCase().endsWith(`@${c.env.DOMAIN}`);
 
-  let microbuyResult: { tx: string; amount: string; tokens_received: string } | null = null;
+  let microbuyResult: MicroBuyResult | null = null;
 
   if (isInternal) {
     // ── Internal delivery ──
@@ -170,41 +121,55 @@ sendRoutes.post('/', async (c) => {
       }, 429);
     }
 
-    // Store email in recipient's inbox
-    const inboxEmailId = generateId();
-    const inboxR2Key = `emails/${recipientHandle}/inbox/${inboxEmailId}.eml`;
-    await c.env.EMAIL_STORE.put(inboxR2Key, rawMime);
-
-    // Micro-buy: invest in recipient's token
-    let microbuyTx: string | null = null;
+    // ── Micro-buy FIRST (so we have price data for signature) ──
     if (recipient.token_address) {
       try {
-        microbuyTx = await microBuy(recipient.token_address, auth.wallet, c.env);
-        microbuyResult = {
-          tx: microbuyTx,
-          amount: '0.001 MON',
-          tokens_received: `$${recipient.token_symbol || recipientHandle.toUpperCase()}`,
-        };
+        microbuyResult = await microBuyWithPrice(
+          recipient.token_address,
+          recipient.token_symbol || recipientHandle.toUpperCase(),
+          auth.wallet,
+          c.env,
+        );
       } catch (e: any) {
         console.log(`[send] Micro-buy failed: ${e.message}`);
-        // Don't fail the email send if micro-buy fails
       }
     }
+
+    // ── Build MIME with dynamic signature ──
+    const textSig = isPro ? '' : (microbuyResult ? buildTextSignatureWithPrice(microbuyResult) : buildTextSignature());
+    const htmlSig = isPro ? '' : (microbuyResult ? buildHtmlSignatureWithPrice(microbuyResult) : buildHtmlSignature());
+
+    const finalBody = body + textSig;
+    const finalHtml = html ? html + htmlSig : undefined;
+
+    const msg = buildMime(auth.handle, fromAddr, to, subject, finalBody, finalHtml, auth.wallet, in_reply_to, attachments, c.env);
+    const rawMime = msg.asRaw();
+    const snippet = body.slice(0, 200);
+
+    // Reply headers
+    if (in_reply_to) {
+      const origEmail = await c.env.DB.prepare(
+        'SELECT id FROM emails WHERE id = ? AND handle = ?'
+      ).bind(in_reply_to, auth.handle).first<{ id: string }>();
+      if (origEmail) {
+        msg.setHeader('In-Reply-To', `<${origEmail.id}@${c.env.DOMAIN}>`);
+        msg.setHeader('References', `<${origEmail.id}@${c.env.DOMAIN}>`);
+      }
+    }
+
+    const rawMimeFinal = msg.asRaw();
+
+    // Store in recipient's inbox
+    const inboxEmailId = generateId();
+    const inboxR2Key = `emails/${recipientHandle}/inbox/${inboxEmailId}.eml`;
+    await c.env.EMAIL_STORE.put(inboxR2Key, rawMimeFinal);
 
     await c.env.DB.prepare(
       `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, created_at)
        VALUES (?, ?, 'inbox', ?, ?, ?, ?, ?, ?, 0, ?, ?)`
     ).bind(
-      inboxEmailId,
-      recipientHandle,
-      fromAddr,
-      to,
-      subject,
-      snippet,
-      inboxR2Key,
-      rawMime.length,
-      microbuyTx,
-      now,
+      inboxEmailId, recipientHandle, fromAddr, to, subject, snippet,
+      inboxR2Key, rawMimeFinal.length, microbuyResult?.tx || null, now,
     ).run();
 
     // Update daily email count
@@ -212,6 +177,18 @@ sendRoutes.post('/', async (c) => {
       `INSERT INTO daily_email_counts (handle, date, count) VALUES (?, ?, 1)
        ON CONFLICT(handle, date) DO UPDATE SET count = count + 1`
     ).bind(auth.handle, today).run();
+
+    // Save to sender's sent folder
+    const sentR2Key = `emails/${auth.handle}/sent/${emailId}.eml`;
+    await c.env.EMAIL_STORE.put(sentR2Key, rawMimeFinal);
+
+    await c.env.DB.prepare(
+      `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, created_at)
+       VALUES (?, ?, 'sent', ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    ).bind(
+      emailId, auth.handle, fromAddr, to, subject, snippet,
+      sentR2Key, rawMimeFinal.length, microbuyResult?.tx || null, now,
+    ).run();
 
   } else {
     // ── External sending (paid, costs 1 credit) ──
@@ -226,6 +203,10 @@ sendRoutes.post('/', async (c) => {
         hint: 'Purchase credits via POST /api/credits/buy (1 credit = 1 external email)',
       }, 402);
     }
+
+    // Static signature for external emails (no micro-buy)
+    const finalBody = isPro ? body : body + buildTextSignature();
+    const finalHtml = html ? (isPro ? html : html + buildHtmlSignature()) : undefined;
 
     if (c.env.RESEND_API_KEY) {
       try {
@@ -276,6 +257,8 @@ sendRoutes.post('/', async (c) => {
       }
     } else {
       try {
+        const msg = buildMime(auth.handle, fromAddr, to, subject, finalBody, finalHtml, auth.wallet, in_reply_to, attachments, c.env);
+        const rawMime = msg.asRaw();
         const message = new EmailMessage(fromAddr, to, rawMime);
         await c.env.SEND_EMAIL.send(message);
       } catch (e: any) {
@@ -290,29 +273,25 @@ sendRoutes.post('/', async (c) => {
     await c.env.DB.prepare(
       'UPDATE accounts SET credits = credits - 1 WHERE handle = ?'
     ).bind(auth.handle).run();
+
+    // Save to sender's sent folder
+    const msg = buildMime(auth.handle, fromAddr, to, subject, finalBody, finalHtml, auth.wallet, in_reply_to, attachments, c.env);
+    const rawMime = msg.asRaw();
+    const snippet = body.slice(0, 200);
+    const sentR2Key = `emails/${auth.handle}/sent/${emailId}.eml`;
+    await c.env.EMAIL_STORE.put(sentR2Key, rawMime);
+
+    await c.env.DB.prepare(
+      `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, created_at)
+       VALUES (?, ?, 'sent', ?, ?, ?, ?, ?, ?, 1, ?)`
+    ).bind(
+      emailId, auth.handle, fromAddr, to, subject, snippet,
+      sentR2Key, rawMime.length, now,
+    ).run();
   }
 
-  // Save to sender's sent folder
-  const sentR2Key = `emails/${auth.handle}/sent/${emailId}.eml`;
-  await c.env.EMAIL_STORE.put(sentR2Key, rawMime);
-
-  await c.env.DB.prepare(
-    `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, created_at)
-     VALUES (?, ?, 'sent', ?, ?, ?, ?, ?, ?, 1, ?, ?)`
-  ).bind(
-    emailId,
-    auth.handle,
-    fromAddr,
-    to,
-    subject,
-    snippet,
-    sentR2Key,
-    rawMime.length,
-    microbuyResult?.tx || null,
-    now,
-  ).run();
-
-  return c.json({
+  // Build API response
+  const response: Record<string, unknown> = {
     success: true,
     email_id: emailId,
     from: fromAddr,
@@ -320,9 +299,54 @@ sendRoutes.post('/', async (c) => {
     subject,
     internal: isInternal,
     attachments: attachments?.length || 0,
-    ...(microbuyResult ? { microbuy: microbuyResult } : {}),
-  });
+  };
+
+  if (microbuyResult) {
+    response.microbuy = {
+      tx: microbuyResult.tx,
+      amount: '0.001 MON',
+      tokens_received: `$${microbuyResult.tokenSymbol}`,
+      tokens_bought: microbuyResult.tokensBought,
+      price_before: microbuyResult.priceBeforeMon,
+      price_after: microbuyResult.priceAfterMon,
+      price_change: microbuyResult.priceChangePercent,
+    };
+  }
+
+  return c.json(response);
 });
+
+// ── Helpers ──
+
+function buildMime(
+  handle: string, from: string, to: string, subject: string,
+  body: string, html: string | undefined, wallet: string,
+  in_reply_to: string | undefined, attachments: Attachment[] | undefined,
+  env: Env,
+) {
+  const msg = createMimeMessage();
+  msg.setSender({ name: handle, addr: from });
+  msg.setRecipient(to);
+  msg.setSubject(subject);
+  msg.addMessage({ contentType: 'text/plain', data: body });
+  if (html) {
+    msg.addMessage({ contentType: 'text/html', data: html });
+  }
+  msg.setHeader('X-NadMail-Agent', handle);
+  msg.setHeader('X-NadMail-Wallet', wallet);
+
+  if (attachments && attachments.length > 0) {
+    for (const att of attachments) {
+      msg.addAttachment({
+        filename: att.filename,
+        contentType: att.content_type,
+        data: att.data,
+      });
+    }
+  }
+
+  return msg;
+}
 
 function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);

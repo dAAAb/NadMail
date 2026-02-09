@@ -157,12 +157,16 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
             subject: replySubject,
             sender_token: senderToken,
             microbuy_tx: sendResult.microbuy?.tx || null,
-            microbuy_amount: sendResult.microbuy?.amount || null,
-            microbuy_token: sendResult.microbuy?.tokens_received || null,
+            microbuy_amount: sendResult.microbuy ? '0.001 MON' : null,
+            microbuy_token: sendResult.microbuy ? `$${sendResult.microbuy.tokenSymbol}` : null,
+            tokens_bought: sendResult.microbuy?.tokensBought || null,
+            price_before: sendResult.microbuy?.priceBeforeMon || null,
+            price_after: sendResult.microbuy?.priceAfterMon || null,
+            price_change: sendResult.microbuy?.priceChangePercent || null,
             incoming_body: emailBody.slice(0, 500),
             reply_body: reply.slice(0, 500),
           });
-          console.log(`[diplomat] Replied to ${fromAddr} | microbuy: ${sendResult.microbuy?.tokens_received || 'none'}`);
+          console.log(`[diplomat] Replied to ${fromAddr} | microbuy: ${sendResult.microbuy ? `$${sendResult.microbuy.tokenSymbol} (${sendResult.microbuy.priceChangePercent}%)` : 'none'}`);
         } catch (e) {
           details.push({
             action: 'email_reply_error',

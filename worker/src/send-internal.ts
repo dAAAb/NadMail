@@ -1,12 +1,16 @@
 /**
  * Email send logic — shared by HTTP route and $DIPLOMAT agent
- * sendInternalEmail: @nadmail.ai → @nadmail.ai (D1 + R2 + micro-buy)
- * sendExternalEmail: @nadmail.ai → external (Resend API)
+ * sendInternalEmail: @nadmail.ai → @nadmail.ai (micro-buy → dynamic signature → D1/R2)
+ * sendExternalEmail: @nadmail.ai → external (Resend API, static signature)
  */
 
 import { createMimeMessage } from 'mimetext';
 import { Env } from './types';
-import { microBuy } from './nadfun';
+import { microBuyWithPrice, type MicroBuyResult } from './nadfun';
+import {
+  buildTextSignature,
+  buildTextSignatureWithPrice,
+} from './signature';
 
 export interface SendInternalParams {
   fromHandle: string;
@@ -20,7 +24,7 @@ export interface SendInternalParams {
 export interface SendInternalResult {
   success: boolean;
   email_id: string;
-  microbuy?: { tx: string; amount: string; tokens_received: string };
+  microbuy?: MicroBuyResult;
 }
 
 function generateId(): string {
@@ -48,12 +52,30 @@ export async function sendInternalEmail(
     throw new Error(`Recipient not found: ${to}`);
   }
 
-  // Build MIME
+  // ── Micro-buy FIRST (so we have price data for signature) ──
+  let microbuyResult: MicroBuyResult | undefined;
+  if (recipient.token_address) {
+    try {
+      microbuyResult = await microBuyWithPrice(
+        recipient.token_address,
+        recipient.token_symbol || recipientHandle.toUpperCase(),
+        fromWallet,
+        env,
+      );
+    } catch (e: any) {
+      console.log(`[send-internal] Micro-buy failed: ${e.message}`);
+    }
+  }
+
+  // ── Build MIME with dynamic signature ──
+  const textSig = microbuyResult ? buildTextSignatureWithPrice(microbuyResult) : buildTextSignature();
+  const finalBody = body + textSig;
+
   const msg = createMimeMessage();
   msg.setSender({ name: fromHandle, addr: fromAddr });
   msg.setRecipient(to);
   msg.setSubject(subject);
-  msg.addMessage({ contentType: 'text/plain', data: body });
+  msg.addMessage({ contentType: 'text/plain', data: finalBody });
   msg.setHeader('X-NadMail-Agent', fromHandle);
   msg.setHeader('X-NadMail-Wallet', fromWallet);
 
@@ -74,21 +96,6 @@ export async function sendInternalEmail(
   const inboxEmailId = generateId();
   const inboxR2Key = `emails/${recipientHandle}/inbox/${inboxEmailId}.eml`;
   await env.EMAIL_STORE.put(inboxR2Key, rawMime);
-
-  // Micro-buy
-  let microbuyResult: { tx: string; amount: string; tokens_received: string } | undefined;
-  if (recipient.token_address) {
-    try {
-      const tx = await microBuy(recipient.token_address, fromWallet, env);
-      microbuyResult = {
-        tx,
-        amount: '0.001 MON',
-        tokens_received: `$${recipient.token_symbol || recipientHandle.toUpperCase()}`,
-      };
-    } catch (e: any) {
-      console.log(`[send-internal] Micro-buy failed: ${e.message}`);
-    }
-  }
 
   await env.DB.prepare(
     `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, created_at)
