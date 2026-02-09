@@ -57,6 +57,7 @@ export default function Landing() {
     upgrade_available?: boolean;
     owned_nad_names?: string[];
     has_nad_name?: boolean;
+    price_info?: { price_mon: number; proxy_buy: { total_mon: number; fee_percent: number; available: boolean } } | null;
   }>(null);
   const [checking, setChecking] = useState(false);
 
@@ -84,10 +85,23 @@ export default function Landing() {
           const data = await res.json();
           setResult({ ...data, registered: true });
         } else {
+          const name = trimmed.toLowerCase();
+          // Not registered — check NNS price
+          let priceInfo = null;
+          try {
+            const priceRes = await fetch(`${API_BASE}/api/register/nad-name-price/${encodeURIComponent(name)}`);
+            if (priceRes.ok) {
+              const priceData = await priceRes.json();
+              if (priceData.available_nns && priceData.available_nadmail) {
+                priceInfo = priceData;
+              }
+            }
+          } catch {}
           setResult({
-            handle: trimmed.toLowerCase(),
-            email: `${trimmed.toLowerCase()}@nadmail.ai`,
+            handle: name,
+            email: `${name}@nadmail.ai`,
             registered: false,
+            price_info: priceInfo,
           });
         }
       }
@@ -207,6 +221,16 @@ export default function Landing() {
                 <p className="text-gray-400 text-sm mb-4">
                   Claim this handle to auto-create <span className="text-nad-purple font-mono">${result.handle?.toUpperCase()}</span> token on nad.fun
                 </p>
+                {result.price_info && result.price_info.proxy_buy?.available && (
+                  <div className="bg-yellow-900/20 border border-yellow-800 rounded-lg p-3 mb-4">
+                    <p className="text-yellow-300 text-sm font-medium mb-1">
+                      {result.handle}.nad is available on NNS!
+                    </p>
+                    <p className="text-gray-400 text-xs">
+                      Price: ~{result.price_info.price_mon.toFixed(2)} MON (+{result.price_info.proxy_buy.fee_percent}% service fee = <span className="text-yellow-300 font-mono">{result.price_info.proxy_buy.total_mon.toFixed(2)} MON</span>)
+                    </p>
+                  </div>
+                )}
                 {result.owned_nad_names && result.owned_nad_names.length > 0 && (
                   <p className="text-purple-400 text-xs mb-3">
                     This wallet owns: {result.owned_nad_names.map(n => `${n}.nad`).join(', ')}
@@ -216,7 +240,9 @@ export default function Landing() {
                   href={`/dashboard${result.handle ? `?claim=${encodeURIComponent(result.handle)}` : ''}`}
                   className="inline-block bg-nad-purple text-white px-6 py-2.5 rounded-lg font-medium hover:bg-purple-600 transition text-sm"
                 >
-                  Claim Now
+                  {result.price_info?.proxy_buy?.available
+                    ? `Claim Now — ${result.price_info.proxy_buy.total_mon.toFixed(2)} MON`
+                    : 'Claim Now'}
                 </a>
               </>
             )}

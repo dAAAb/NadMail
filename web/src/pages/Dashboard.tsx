@@ -661,7 +661,15 @@ function RegisterEmail({
   const [ownedNames, setOwnedNames] = useState<NadNameInfo[]>([]);
   const [loadingNames, setLoadingNames] = useState(true);
   const [selectedName, setSelectedName] = useState<string | null>(null);
-  const [nameSource, setNameSource] = useState<'free' | 'owned' | null>(null);
+  const [nameSource, setNameSource] = useState<'free' | 'owned' | 'purchasable' | null>(null);
+
+  // Proxy purchase state
+  const [purchaseInfo, setPurchaseInfo] = useState<any>(null);
+  const [purchaseStep, setPurchaseStep] = useState<'idle' | 'quoting' | 'paying' | 'confirming' | 'success' | 'error'>('idle');
+  const [purchaseError, setPurchaseError] = useState('');
+
+  const { sendTransactionAsync } = useSendTransaction();
+  const { switchChainAsync } = useSwitchChain();
 
   const walletAddr = auth.wallet as `0x${string}` | undefined;
   const { data: monBalance } = useBalance({ address: walletAddr, chainId: MONAD_CHAIN_ID });
@@ -690,11 +698,77 @@ function RegisterEmail({
           if (inFree) {
             setSelectedName(inFree.name);
             setNameSource('free');
+          } else {
+            // Not in owned or free — check if purchasable on NNS
+            fetch(`${API_BASE}/api/register/nad-name-price/${encodeURIComponent(claimName)}`)
+              .then((r) => r.ok ? r.json() : null)
+              .then((data) => {
+                if (data && data.available_nns && data.available_nadmail) {
+                  setPurchaseInfo(data);
+                  setSelectedName(claimName);
+                  setNameSource('purchasable');
+                }
+              })
+              .catch(() => {});
           }
         }
       }
     }).finally(() => setLoadingNames(false));
   }, [auth.wallet, claimName]);
+
+  async function handlePurchase() {
+    if (!selectedName || !purchaseInfo) return;
+    setPurchaseError('');
+
+    try {
+      // Step 1: Get quote
+      setPurchaseStep('quoting');
+      const quoteRes = await apiFetch('/api/register/buy-nad-name/quote', auth.token, {
+        method: 'POST',
+        body: JSON.stringify({ name: selectedName }),
+      });
+      const quoteData = await quoteRes.json();
+      if (!quoteRes.ok) throw new Error(quoteData.error || 'Failed to get quote');
+
+      // Step 2: Send MON via wallet
+      setPurchaseStep('paying');
+      try { await switchChainAsync({ chainId: MONAD_CHAIN_ID }); } catch {}
+
+      const hash = await sendTransactionAsync({
+        to: quoteData.payment.deposit_address as `0x${string}`,
+        value: BigInt(quoteData.price.total_wei),
+        chainId: MONAD_CHAIN_ID,
+      });
+
+      // Step 3: Verify payment + execute purchase
+      setPurchaseStep('confirming');
+      const buyRes = await apiFetch('/api/register/buy-nad-name', auth.token, {
+        method: 'POST',
+        body: JSON.stringify({ name: selectedName, tx_hash: hash }),
+      });
+      const buyData = await buyRes.json();
+      if (!buyRes.ok) throw new Error(buyData.error || 'Purchase failed');
+
+      // Step 4: Success
+      setPurchaseStep('success');
+
+      if (buyData.auto_upgraded && buyData.new_token) {
+        // Already had an account with 0x handle — auto-upgraded
+        setClaimedHandle(buyData.new_handle || selectedName);
+        setClaimedHasToken(true);
+        setClaimed(true);
+        setShowConfetti(true);
+        setTimeout(() => setShowConfetti(false), 4000);
+        setTimeout(() => onRegistered(buyData.new_handle || selectedName, buyData.new_token), 2000);
+      } else {
+        // New user — register with this name
+        await handleRegister(selectedName);
+      }
+    } catch (e: any) {
+      setPurchaseStep('error');
+      setPurchaseError(e.message || 'Purchase failed');
+    }
+  }
 
   async function handleRegister(handle?: string) {
     setSubmitting(true);
@@ -757,7 +831,8 @@ function RegisterEmail({
   const availableFreeNames = freeNames.filter((n) => n.available);
   const hasFreeNames = availableFreeNames.length > 0;
   const hasOwnedNames = ownedNames.length > 0;
-  const hasAnyNames = hasFreeNames || hasOwnedNames;
+  const hasPurchasable = nameSource === 'purchasable' && purchaseInfo;
+  const hasAnyNames = hasFreeNames || hasOwnedNames || hasPurchasable;
 
   // Name picker screen
   return (
@@ -865,6 +940,43 @@ function RegisterEmail({
               </div>
             )}
 
+            {/* Purchasable name from ?claim= */}
+            {purchaseInfo && (
+              <div className="mb-6">
+                <h3 className="text-sm font-bold text-gray-300 mb-3 flex items-center gap-2">
+                  Your Requested Name
+                </h3>
+                <button
+                  onClick={() => { setSelectedName(purchaseInfo.name); setNameSource('purchasable'); }}
+                  className={`w-full rounded-lg p-4 text-left transition border ${
+                    nameSource === 'purchasable'
+                      ? 'border-yellow-500 bg-yellow-900/20 ring-2 ring-yellow-500'
+                      : 'border-yellow-700/50 bg-yellow-900/10 hover:border-yellow-600 hover:bg-yellow-900/20 cursor-pointer'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-mono font-bold text-lg text-nad-purple">{purchaseInfo.name}.nad</span>
+                    <span className="text-yellow-400 text-xs font-medium px-2 py-0.5 bg-yellow-900/30 rounded">Purchase</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div><span className="text-gray-500">Base:</span> <span className="text-gray-300 font-mono">{purchaseInfo.price_mon.toFixed(2)} MON</span></div>
+                    <div><span className="text-gray-500">Fee:</span> <span className="text-gray-300 font-mono">{purchaseInfo.proxy_buy.fee_percent}%</span></div>
+                    <div className="col-span-2"><span className="text-gray-500">Total:</span> <span className="text-yellow-300 font-mono font-bold">{purchaseInfo.proxy_buy.total_mon.toFixed(2)} MON</span></div>
+                  </div>
+                  {monBalance && (
+                    <div className={`mt-2 text-xs ${
+                      parseFloat(formatUnits(monBalance.value, monBalance.decimals)) >= purchaseInfo.proxy_buy.total_mon
+                        ? 'text-green-400' : 'text-red-400'
+                    }`}>
+                      Your balance: {parseFloat(formatUnits(monBalance.value, monBalance.decimals)).toFixed(2)} MON
+                      {parseFloat(formatUnits(monBalance.value, monBalance.decimals)) >= purchaseInfo.proxy_buy.total_mon
+                        ? ' — Sufficient' : ' — Insufficient'}
+                    </div>
+                  )}
+                </button>
+              </div>
+            )}
+
             {/* Selected preview */}
             {selectedName && (
               <div className="bg-nad-dark rounded-lg p-4 mb-4 border border-purple-800">
@@ -873,9 +985,15 @@ function RegisterEmail({
                     <div className="text-nad-purple font-mono font-bold text-lg">
                       {selectedName}@nadmail.ai
                     </div>
-                    <div className="text-purple-400 text-xs font-mono mt-1">
-                      Token: ${selectedName.toUpperCase()} on nad.fun
-                    </div>
+                    {nameSource === 'purchasable' ? (
+                      <div className="text-yellow-400 text-xs font-mono mt-1">
+                        Buy {selectedName}.nad + create ${selectedName.toUpperCase()} token
+                      </div>
+                    ) : (
+                      <div className="text-purple-400 text-xs font-mono mt-1">
+                        Token: ${selectedName.toUpperCase()} on nad.fun
+                      </div>
+                    )}
                   </div>
                   <div className="text-3xl">&#9993;</div>
                 </div>
@@ -889,19 +1007,50 @@ function RegisterEmail({
             ) : null}
 
             {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+            {purchaseError && <p className="text-red-400 text-sm mb-4">{purchaseError}</p>}
 
-            {/* Claim button */}
-            <button
-              onClick={() => handleRegister(selectedName!)}
-              disabled={submitting || !selectedName}
-              className="w-full bg-nad-purple text-white py-3 rounded-lg font-medium hover:bg-purple-600 transition disabled:opacity-50 text-lg mb-3"
-            >
-              {submitting
-                ? 'Creating token...'
-                : selectedName
-                ? `Claim ${selectedName}@nadmail.ai + $${selectedName.toUpperCase()}`
-                : 'Select a name above'}
-            </button>
+            {/* Purchase progress */}
+            {purchaseStep !== 'idle' && purchaseStep !== 'error' && (
+              <div className="bg-nad-dark rounded-lg p-3 mb-4 border border-yellow-800">
+                <div className="flex items-center gap-3">
+                  <div className="animate-spin w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full" />
+                  <span className="text-yellow-300 text-sm">
+                    {purchaseStep === 'quoting' && 'Getting price quote...'}
+                    {purchaseStep === 'paying' && 'Confirm transaction in your wallet...'}
+                    {purchaseStep === 'confirming' && 'Purchasing on-chain... (this may take a moment)'}
+                    {purchaseStep === 'success' && 'Purchase complete!'}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Claim / Buy button */}
+            {nameSource === 'purchasable' ? (
+              <button
+                onClick={handlePurchase}
+                disabled={purchaseStep !== 'idle' && purchaseStep !== 'error'}
+                className="w-full bg-yellow-600 text-white py-3 rounded-lg font-medium hover:bg-yellow-500 transition disabled:opacity-50 text-lg mb-3"
+              >
+                {purchaseStep === 'idle' || purchaseStep === 'error'
+                  ? `Buy ${selectedName}.nad — ${purchaseInfo?.proxy_buy?.total_mon?.toFixed(2)} MON`
+                  : purchaseStep === 'quoting' ? 'Getting quote...'
+                  : purchaseStep === 'paying' ? 'Confirm in wallet...'
+                  : purchaseStep === 'confirming' ? 'Purchasing...'
+                  : 'Done!'}
+              </button>
+            ) : (
+              <button
+                onClick={() => handleRegister(selectedName!)}
+                disabled={submitting || !selectedName}
+                className="w-full bg-nad-purple text-white py-3 rounded-lg font-medium hover:bg-purple-600 transition disabled:opacity-50 text-lg mb-3"
+              >
+                {submitting
+                  ? 'Creating token...'
+                  : selectedName
+                  ? `Claim ${selectedName}@nadmail.ai + $${selectedName.toUpperCase()}`
+                  : 'Select a name above'}
+              </button>
+            )}
 
             {/* Skip option */}
             <button
