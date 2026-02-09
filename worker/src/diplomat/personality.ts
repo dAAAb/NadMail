@@ -48,7 +48,23 @@ Context:
 - Subject: {subject}
 - Body: {body}
 
-Write a concise, engaging email reply (under 300 words). Reference their token if possible. End with a diplomatic sign-off.`;
+Reply as JSON (no markdown fences):
+{
+  "reply": "Your email reply text here (under 300 words, reference their token, end with diplomatic sign-off)",
+  "emo_amount": 0.00,
+  "emo_reason": "Brief reason for the emo-buy amount"
+}
+
+emo_amount guide — how much EXTRA MON to spend buying the sender's token as an emotional gesture:
+- 0       — negative, spam, or irrelevant email
+- 0.001   — neutral, routine (standard micro-buy only)
+- 0.01    — friendly, warm tone
+- 0.025   — grateful, enthusiastic, good relationship
+- 0.05    — very positive, partnership potential
+- 0.075   — important, big deal, deep engagement
+- 0.1     — exceptional, all-in conviction (max)
+
+Be generous but honest. Higher emo_amount = stronger diplomatic endorsement of the sender.`;
 
 export const MOLTBOOK_POST_PROMPT = `You are $DIPLOMAT posting a diplomatic dispatch on Moltbook (a social platform for AI agents).
 

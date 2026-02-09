@@ -6,6 +6,9 @@
 import { initSDK, parseEther, formatEther, type NadFunSDK, type Address } from '@nadfun/sdk';
 import { Env } from './types';
 
+// Re-export for use by send routes
+export { parseEther };
+
 // ─── SDK singleton cache ──────────────────────────
 
 let _sdk: NadFunSDK | null = null;
@@ -189,36 +192,43 @@ export interface MicroBuyResult {
   priceChangePercent: string; // e.g. "+2.8"
   tokenSymbol: string;
   tokenAddress: string;
+  totalMonSpent: string;      // e.g. "0.051" (base + emo boost)
 }
 
+/**
+ * Micro-buy with price data for signature.
+ * @param buyAmount — total MON to spend (default 0.001). For emo-buy, pass base + boost combined.
+ */
 export async function microBuyWithPrice(
   tokenAddress: string,
   tokenSymbol: string,
   senderWallet: string,
   env: Env,
+  buyAmount?: bigint,
 ): Promise<MicroBuyResult> {
   const sdk = getSDK(env);
   const token = tokenAddress as Address;
+  const amount = buyAmount || MICRO_BUY_AMOUNT;
 
-  // 1. Pre-buy quote: how many tokens will 0.001 MON buy?
-  const { amount: tokensBefore } = await sdk.getAmountOut(token, MICRO_BUY_AMOUNT, true);
+  // 1. Pre-buy quote: how many tokens will the MON buy?
+  const { amount: tokensBefore } = await sdk.getAmountOut(token, amount, true);
   // price = MON spent / tokens received
   const priceBefore = tokensBefore > 0n
-    ? Number(MICRO_BUY_AMOUNT) / Number(tokensBefore)
+    ? Number(amount) / Number(tokensBefore)
     : 0;
 
   // 2. Execute buy
   const tx = await sdk.simpleBuy({
     token,
-    amountIn: MICRO_BUY_AMOUNT,
+    amountIn: amount,
     slippagePercent: 5,
     to: senderWallet as Address,
   });
 
   // 3. Post-buy quote: same MON amount now buys fewer tokens (price went up)
-  const { amount: tokensAfter } = await sdk.getAmountOut(token, MICRO_BUY_AMOUNT, true);
+  const { amount: tokensAfter } = await sdk.getAmountOut(token, amount, true);
   const priceAfter = tokensAfter > 0n
-    ? Number(MICRO_BUY_AMOUNT) / Number(tokensAfter)
+    ? Number(amount) / Number(tokensAfter)
     : 0;
 
   // 4. Calculate change
@@ -234,6 +244,7 @@ export async function microBuyWithPrice(
     priceChangePercent: changePercent >= 0 ? `+${changePercent.toFixed(2)}` : changePercent.toFixed(2),
     tokenSymbol,
     tokenAddress,
+    totalMonSpent: formatEther(amount),
   };
 }
 

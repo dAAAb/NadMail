@@ -1121,6 +1121,22 @@ function Compose({ auth }: { auth: AuthState }) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [showBuyCredits, setShowBuyCredits] = useState(false);
+  const [emoChip, setEmoChip] = useState<string | null>(null);
+  const [emoCustom, setEmoCustom] = useState('');
+
+  const EMO_PRESETS = [
+    { id: 'friendly', emoji: '\u{1F60A}', label: 'Friendly', amount: 0.01 },
+    { id: 'bullish', emoji: '\u{1F60D}', label: 'Bullish', amount: 0.025 },
+    { id: 'super', emoji: '\u{1F525}', label: 'Super Bullish', amount: 0.05 },
+    { id: 'moon', emoji: '\u{1F680}', label: 'Moon', amount: 0.075 },
+    { id: 'wagmi', emoji: '\u{1F48E}', label: 'WAGMI', amount: 0.1 },
+    { id: 'custom', emoji: '\u{270F}\u{FE0F}', label: 'Custom', amount: 0 },
+  ];
+
+  const isInternalRecipient = to.toLowerCase().endsWith('@nadmail.ai');
+  const emoAmount = emoChip === 'custom'
+    ? Math.min(Math.max(parseFloat(emoCustom) || 0, 0), 0.1)
+    : (EMO_PRESETS.find(p => p.id === emoChip)?.amount || 0);
 
   async function handleSend() {
     if (!to || !subject || !body) {
@@ -1131,9 +1147,13 @@ function Compose({ auth }: { auth: AuthState }) {
     setSending(true);
     setError('');
     try {
+      const sendBody: Record<string, unknown> = { to, subject, body };
+      if (emoAmount > 0 && isInternalRecipient) {
+        sendBody.emo_amount = emoAmount;
+      }
       const res = await apiFetch('/api/send', auth.token, {
         method: 'POST',
-        body: JSON.stringify({ to, subject, body }),
+        body: JSON.stringify(sendBody),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -1194,6 +1214,47 @@ function Compose({ auth }: { auth: AuthState }) {
           />
         </div>
 
+        {isInternalRecipient && (
+          <div className="bg-nad-gray border border-gray-800 rounded-lg p-4">
+            <div className="text-sm text-gray-400 mb-3">{'\u{1F4B0}'} Emo-Boost — pump their coin with your email!</div>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {EMO_PRESETS.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => setEmoChip(emoChip === p.id ? null : p.id)}
+                  className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${
+                    emoChip === p.id
+                      ? 'bg-nad-purple text-white border border-nad-purple'
+                      : 'bg-gray-800 text-gray-300 border border-gray-700 hover:border-gray-500'
+                  }`}
+                >
+                  {p.emoji} {p.label}
+                </button>
+              ))}
+            </div>
+            {emoChip === 'custom' && (
+              <div className="flex items-center gap-2 mt-2">
+                <input
+                  type="number"
+                  min="0.001"
+                  max="0.1"
+                  step="0.001"
+                  value={emoCustom}
+                  onChange={(e) => setEmoCustom(e.target.value)}
+                  placeholder="0.01"
+                  className="w-28 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-nad-purple"
+                />
+                <span className="text-gray-400 text-sm">MON (max 0.1)</span>
+              </div>
+            )}
+            {emoAmount > 0 && (
+              <div className="text-xs text-gray-500 mt-2">
+                Total buy: {(0.001 + emoAmount).toFixed(3)} MON (base 0.001 + boost {emoAmount})
+              </div>
+            )}
+          </div>
+        )}
+
         {error && <div className="text-red-400 text-sm">{error}</div>}
 
         <button
@@ -1201,7 +1262,7 @@ function Compose({ auth }: { auth: AuthState }) {
           disabled={sending}
           className="bg-nad-purple text-white px-8 py-3 rounded-lg font-medium hover:bg-purple-600 transition disabled:opacity-50"
         >
-          {sending ? 'Sending...' : 'Send'}
+          {sending ? 'Sending...' : emoAmount > 0 ? `Send + Boost ${emoAmount} MON` : 'Send'}
         </button>
       </div>
 

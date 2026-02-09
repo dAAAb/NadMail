@@ -72,6 +72,15 @@ CREATE TABLE IF NOT EXISTS agent_logs (
 
 CREATE INDEX IF NOT EXISTS idx_agent_logs_started ON agent_logs(started_at DESC);
 
+-- Emo-buy 每日加碼追蹤
+CREATE TABLE IF NOT EXISTS daily_emobuy_totals (
+    handle      TEXT NOT NULL,
+    date        TEXT NOT NULL,
+    total_mon   REAL NOT NULL DEFAULT 0,
+    tx_count    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (handle, date)
+);
+
 -- 免費 .nad 名稱贈送池
 CREATE TABLE IF NOT EXISTS free_nad_names (
     name        TEXT PRIMARY KEY,

@@ -52,3 +52,37 @@ export async function generateEmailReply(
   }
   return generate(apiKey, systemPrompt, prompt);
 }
+
+export interface EmoReply {
+  reply: string;
+  emo_amount: number;
+  emo_reason: string;
+}
+
+export async function generateEmailReplyWithEmo(
+  apiKey: string,
+  systemPrompt: string,
+  template: string,
+  vars: Record<string, string>,
+): Promise<EmoReply> {
+  let prompt = template;
+  for (const [key, value] of Object.entries(vars)) {
+    prompt = prompt.replace(`{${key}}`, value);
+  }
+  const raw = await generate(apiKey, systemPrompt, prompt);
+
+  // Try to parse JSON response
+  try {
+    // Strip markdown fences if present
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const parsed = JSON.parse(cleaned);
+    return {
+      reply: String(parsed.reply || raw),
+      emo_amount: Math.min(Math.max(Number(parsed.emo_amount) || 0, 0), 0.1),
+      emo_reason: String(parsed.emo_reason || ''),
+    };
+  } catch {
+    // Fallback: treat entire response as reply, no emo-buy
+    return { reply: raw, emo_amount: 0, emo_reason: 'JSON parse failed' };
+  }
+}

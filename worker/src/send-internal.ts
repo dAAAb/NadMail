@@ -6,11 +6,13 @@
 
 import { createMimeMessage } from 'mimetext';
 import { Env } from './types';
-import { microBuyWithPrice, type MicroBuyResult } from './nadfun';
+import { microBuyWithPrice, parseEther, type MicroBuyResult } from './nadfun';
 import {
   buildTextSignature,
   buildTextSignatureWithPrice,
 } from './signature';
+
+const BASE_MICRO_BUY = parseEther('0.001');
 
 export interface SendInternalParams {
   fromHandle: string;
@@ -19,6 +21,7 @@ export interface SendInternalParams {
   subject: string;
   body: string;
   in_reply_to?: string;
+  emo_amount?: number; // extra MON boost (0 ~ 0.1)
 }
 
 export interface SendInternalResult {
@@ -37,7 +40,8 @@ export async function sendInternalEmail(
   env: Env,
   params: SendInternalParams,
 ): Promise<SendInternalResult> {
-  const { fromHandle, fromWallet, to, subject, body, in_reply_to } = params;
+  const { fromHandle, fromWallet, to, subject, body, in_reply_to, emo_amount } = params;
+  const emoAmount = typeof emo_amount === 'number' ? Math.min(Math.max(emo_amount, 0), 0.1) : 0;
   const fromAddr = `${fromHandle}@${env.DOMAIN}`;
   const emailId = generateId();
   const now = Math.floor(Date.now() / 1000);
@@ -53,6 +57,10 @@ export async function sendInternalEmail(
   }
 
   // ── Micro-buy FIRST (so we have price data for signature) ──
+  const totalBuyAmount = emoAmount > 0
+    ? BASE_MICRO_BUY + parseEther(emoAmount.toString())
+    : undefined; // undefined = default 0.001
+
   let microbuyResult: MicroBuyResult | undefined;
   if (recipient.token_address) {
     try {
@@ -61,6 +69,7 @@ export async function sendInternalEmail(
         recipient.token_symbol || recipientHandle.toUpperCase(),
         fromWallet,
         env,
+        totalBuyAmount,
       );
     } catch (e: any) {
       console.log(`[send-internal] Micro-buy failed: ${e.message}`);
@@ -68,7 +77,7 @@ export async function sendInternalEmail(
   }
 
   // ── Build MIME with dynamic signature ──
-  const textSig = microbuyResult ? buildTextSignatureWithPrice(microbuyResult) : buildTextSignature();
+  const textSig = microbuyResult ? buildTextSignatureWithPrice(microbuyResult, emoAmount) : buildTextSignature();
   const finalBody = body + textSig;
 
   const msg = createMimeMessage();
@@ -98,11 +107,11 @@ export async function sendInternalEmail(
   await env.EMAIL_STORE.put(inboxR2Key, rawMime);
 
   await env.DB.prepare(
-    `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, created_at)
-     VALUES (?, ?, 'inbox', ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+    `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, emo_amount, created_at)
+     VALUES (?, ?, 'inbox', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
   ).bind(
     inboxEmailId, recipientHandle, fromAddr, to, subject, snippet,
-    inboxR2Key, rawMime.length, microbuyResult?.tx || null, now,
+    inboxR2Key, rawMime.length, microbuyResult?.tx || null, emoAmount || 0, now,
   ).run();
 
   // Save to sender's sent folder
@@ -110,11 +119,11 @@ export async function sendInternalEmail(
   await env.EMAIL_STORE.put(sentR2Key, rawMime);
 
   await env.DB.prepare(
-    `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, created_at)
-     VALUES (?, ?, 'sent', ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, emo_amount, created_at)
+     VALUES (?, ?, 'sent', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
   ).bind(
     emailId, fromHandle, fromAddr, to, subject, snippet,
-    sentR2Key, rawMime.length, microbuyResult?.tx || null, now,
+    sentR2Key, rawMime.length, microbuyResult?.tx || null, emoAmount || 0, now,
   ).run();
 
   // Update daily email count

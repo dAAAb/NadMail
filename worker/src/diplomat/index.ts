@@ -119,8 +119,8 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
             senderAcct?.token_address || undefined,
             senderAcct?.token_symbol || undefined);
 
-          // Generate reply via Claude
-          const reply = await claude.generateEmailReply(
+          // Generate reply via Claude (with emo-buy decision)
+          const emoReply = await claude.generateEmailReplyWithEmo(
             env.ANTHROPIC_API_KEY,
             SYSTEM_PROMPT,
             EMAIL_REPLY_PROMPT,
@@ -142,8 +142,9 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
             fromWallet: diplomatAcct.wallet,
             to: fromAddr,
             subject: replySubject,
-            body: reply,
+            body: emoReply.reply,
             in_reply_to: email.id as string,
+            emo_amount: emoReply.emo_amount,
           });
 
           trading.recordInteraction(portfolio, senderHandle, 'sent');
@@ -156,17 +157,19 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
             to: fromAddr,
             subject: replySubject,
             sender_token: senderToken,
+            emo_amount: emoReply.emo_amount,
+            emo_reason: emoReply.emo_reason,
             microbuy_tx: sendResult.microbuy?.tx || null,
-            microbuy_amount: sendResult.microbuy ? '0.001 MON' : null,
+            microbuy_total: sendResult.microbuy?.totalMonSpent || null,
             microbuy_token: sendResult.microbuy ? `$${sendResult.microbuy.tokenSymbol}` : null,
             tokens_bought: sendResult.microbuy?.tokensBought || null,
             price_before: sendResult.microbuy?.priceBeforeMon || null,
             price_after: sendResult.microbuy?.priceAfterMon || null,
             price_change: sendResult.microbuy?.priceChangePercent || null,
             incoming_body: emailBody.slice(0, 500),
-            reply_body: reply.slice(0, 500),
+            reply_body: emoReply.reply.slice(0, 500),
           });
-          console.log(`[diplomat] Replied to ${fromAddr} | microbuy: ${sendResult.microbuy ? `$${sendResult.microbuy.tokenSymbol} (${sendResult.microbuy.priceChangePercent}%)` : 'none'}`);
+          console.log(`[diplomat] Replied to ${fromAddr} | emo: ${emoReply.emo_amount} MON (${emoReply.emo_reason}) | microbuy: ${sendResult.microbuy ? `${sendResult.microbuy.totalMonSpent} MON → $${sendResult.microbuy.tokenSymbol} (${sendResult.microbuy.priceChangePercent}%)` : 'none'}`);
         } catch (e) {
           details.push({
             action: 'email_reply_error',

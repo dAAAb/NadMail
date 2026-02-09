@@ -3,7 +3,7 @@ import { EmailMessage } from 'cloudflare:email';
 import { createMimeMessage } from 'mimetext';
 import { Env } from '../types';
 import { authMiddleware } from '../auth';
-import { microBuyWithPrice, type MicroBuyResult } from '../nadfun';
+import { microBuyWithPrice, parseEther, type MicroBuyResult } from '../nadfun';
 import {
   buildTextSignature,
   buildHtmlSignature,
@@ -16,6 +16,9 @@ export const sendRoutes = new Hono<{ Bindings: Env }>();
 sendRoutes.use('/*', authMiddleware());
 
 const DAILY_EMAIL_LIMIT = 10;
+const EMO_BUY_MAX = 0.1;           // Max emo-buy per transaction (MON)
+const EMO_BUY_DAILY_LIMIT = 0.5;   // Max total emo-buy per user per day (MON)
+const BASE_MICRO_BUY = parseEther('0.001');
 
 interface Attachment {
   filename: string;
@@ -37,7 +40,7 @@ sendRoutes.post('/', async (c) => {
     return c.json({ error: 'No email registered for this wallet' }, 403);
   }
 
-  let parsed: { to: string; subject: string; body: string; html?: string; in_reply_to?: string; attachments?: Attachment[] };
+  let parsed: { to: string; subject: string; body: string; html?: string; in_reply_to?: string; attachments?: Attachment[]; emo_amount?: number };
   try {
     parsed = await c.req.json();
   } catch (e: any) {
@@ -47,7 +50,10 @@ sendRoutes.post('/', async (c) => {
       detail: e.message,
     }, 400);
   }
-  const { to, subject, body, html, in_reply_to, attachments } = parsed;
+  const { to, subject, body, html, in_reply_to, attachments, emo_amount } = parsed;
+
+  // Validate emo_amount
+  const emoAmount = typeof emo_amount === 'number' ? Math.min(Math.max(emo_amount, 0), EMO_BUY_MAX) : 0;
 
   if (!to || !subject || !body) {
     return c.json({ error: 'to, subject, and body are required' }, 400);
@@ -121,7 +127,33 @@ sendRoutes.post('/', async (c) => {
       }, 429);
     }
 
+    // ── Check emo-buy daily limit ──
+    let effectiveEmo = emoAmount;
+    if (effectiveEmo > 0) {
+      const emoDaily = await c.env.DB.prepare(
+        'SELECT total_mon FROM daily_emobuy_totals WHERE handle = ? AND date = ?'
+      ).bind(auth.handle, today).first<{ total_mon: number }>();
+      const spent = emoDaily?.total_mon || 0;
+      if (spent + effectiveEmo > EMO_BUY_DAILY_LIMIT) {
+        const remaining = Math.max(0, EMO_BUY_DAILY_LIMIT - spent);
+        if (remaining < 0.001) {
+          return c.json({
+            error: 'Daily emo-buy limit reached',
+            daily_limit: EMO_BUY_DAILY_LIMIT,
+            spent,
+            remaining: 0,
+            resets: 'midnight UTC',
+          }, 429);
+        }
+        effectiveEmo = Math.min(effectiveEmo, remaining);
+      }
+    }
+
     // ── Micro-buy FIRST (so we have price data for signature) ──
+    const totalBuyAmount = effectiveEmo > 0
+      ? BASE_MICRO_BUY + parseEther(effectiveEmo.toString())
+      : undefined; // undefined = default 0.001
+
     if (recipient.token_address) {
       try {
         microbuyResult = await microBuyWithPrice(
@@ -129,15 +161,24 @@ sendRoutes.post('/', async (c) => {
           recipient.token_symbol || recipientHandle.toUpperCase(),
           auth.wallet,
           c.env,
+          totalBuyAmount,
         );
       } catch (e: any) {
         console.log(`[send] Micro-buy failed: ${e.message}`);
       }
     }
 
+    // ── Update emo-buy daily tracking ──
+    if (effectiveEmo > 0 && microbuyResult) {
+      await c.env.DB.prepare(
+        `INSERT INTO daily_emobuy_totals (handle, date, total_mon, tx_count) VALUES (?, ?, ?, 1)
+         ON CONFLICT(handle, date) DO UPDATE SET total_mon = total_mon + ?, tx_count = tx_count + 1`
+      ).bind(auth.handle, today, effectiveEmo, effectiveEmo).run();
+    }
+
     // ── Build MIME with dynamic signature ──
-    const textSig = isPro ? '' : (microbuyResult ? buildTextSignatureWithPrice(microbuyResult) : buildTextSignature());
-    const htmlSig = isPro ? '' : (microbuyResult ? buildHtmlSignatureWithPrice(microbuyResult) : buildHtmlSignature());
+    const textSig = isPro ? '' : (microbuyResult ? buildTextSignatureWithPrice(microbuyResult, effectiveEmo) : buildTextSignature());
+    const htmlSig = isPro ? '' : (microbuyResult ? buildHtmlSignatureWithPrice(microbuyResult, effectiveEmo) : buildHtmlSignature());
 
     const finalBody = body + textSig;
     const finalHtml = html ? html + htmlSig : undefined;
@@ -165,11 +206,11 @@ sendRoutes.post('/', async (c) => {
     await c.env.EMAIL_STORE.put(inboxR2Key, rawMimeFinal);
 
     await c.env.DB.prepare(
-      `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, created_at)
-       VALUES (?, ?, 'inbox', ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+      `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, emo_amount, created_at)
+       VALUES (?, ?, 'inbox', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
     ).bind(
       inboxEmailId, recipientHandle, fromAddr, to, subject, snippet,
-      inboxR2Key, rawMimeFinal.length, microbuyResult?.tx || null, now,
+      inboxR2Key, rawMimeFinal.length, microbuyResult?.tx || null, effectiveEmo || 0, now,
     ).run();
 
     // Update daily email count
@@ -183,11 +224,11 @@ sendRoutes.post('/', async (c) => {
     await c.env.EMAIL_STORE.put(sentR2Key, rawMimeFinal);
 
     await c.env.DB.prepare(
-      `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, created_at)
-       VALUES (?, ?, 'sent', ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+      `INSERT INTO emails (id, handle, folder, from_addr, to_addr, subject, snippet, r2_key, size, read, microbuy_tx, emo_amount, created_at)
+       VALUES (?, ?, 'sent', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
     ).bind(
       emailId, auth.handle, fromAddr, to, subject, snippet,
-      sentR2Key, rawMimeFinal.length, microbuyResult?.tx || null, now,
+      sentR2Key, rawMimeFinal.length, microbuyResult?.tx || null, effectiveEmo || 0, now,
     ).run();
 
   } else {
@@ -304,12 +345,13 @@ sendRoutes.post('/', async (c) => {
   if (microbuyResult) {
     response.microbuy = {
       tx: microbuyResult.tx,
-      amount: '0.001 MON',
+      amount: `${microbuyResult.totalMonSpent} MON`,
       tokens_received: `$${microbuyResult.tokenSymbol}`,
       tokens_bought: microbuyResult.tokensBought,
       price_before: microbuyResult.priceBeforeMon,
       price_after: microbuyResult.priceAfterMon,
       price_change: microbuyResult.priceChangePercent,
+      emo_boost: emoAmount > 0 ? emoAmount : undefined,
     };
   }
 
