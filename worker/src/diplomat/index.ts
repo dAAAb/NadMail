@@ -8,7 +8,7 @@
  */
 
 import { Env } from '../types';
-import { sendInternalEmail, sendExternalEmail } from '../send-internal';
+import { sendInternalEmail } from '../send-internal';
 import * as claude from './claude';
 import * as moltbook from './moltbook';
 import * as trading from './trading';
@@ -81,20 +81,35 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
       for (const email of unread) {
         if (state.repliedEmailIds.includes(email.id as string)) continue;
 
-        try {
-          // Mark as read
-          await env.DB.prepare('UPDATE emails SET read = 1 WHERE id = ?')
-            .bind(email.id).run();
+        const fromAddr = email.from_addr as string;
+        const isInternal = fromAddr.toLowerCase().endsWith(`@${env.DOMAIN}`);
 
+        // Mark as read regardless
+        await env.DB.prepare('UPDATE emails SET read = 1 WHERE id = ?')
+          .bind(email.id).run();
+
+        // Skip external senders — no token to micro-buy, avoid DNS/Resend blocks
+        if (!isInternal) {
+          state.repliedEmailIds.push(email.id as string);
+          details.push({
+            action: 'email_skipped_external',
+            from: fromAddr,
+            subject: email.subject,
+            reason: 'External sender — no token, skip to avoid email reputation risk',
+          });
+          console.log(`[diplomat] Skipped external: ${fromAddr}`);
+          continue;
+        }
+
+        try {
           // Get full body from R2
           const r2Obj = await env.EMAIL_STORE.get(email.r2_key as string);
           const rawMime = r2Obj ? await r2Obj.text() : '';
-          // Extract plain text body from MIME (after double newline)
           const bodyStart = rawMime.indexOf('\n\n');
           const emailBody = bodyStart >= 0 ? rawMime.slice(bodyStart + 2) : (email.snippet as string || '');
 
           // Look up sender token
-          const senderHandle = (email.from_addr as string).split('@')[0];
+          const senderHandle = fromAddr.split('@')[0];
           const senderAcct = await env.DB.prepare(
             'SELECT token_address, token_symbol FROM accounts WHERE handle = ?'
           ).bind(senderHandle).first<{ token_address: string | null; token_symbol: string | null }>();
@@ -110,26 +125,22 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
             SYSTEM_PROMPT,
             EMAIL_REPLY_PROMPT,
             {
-              sender: email.from_addr as string,
+              sender: fromAddr,
               senderToken,
               subject: (email.subject as string) || '(no subject)',
               body: emailBody.slice(0, 2000),
             },
           );
 
-          // Send reply (internal or external depending on sender address)
+          // Send reply (internal only — micro-buy recipient's token)
           const replySubject = (email.subject as string)?.startsWith('Re:')
             ? email.subject as string
             : `Re: ${(email.subject as string) || '(no subject)'}`;
 
-          const replyTo = email.from_addr as string;
-          const isInternal = replyTo.toLowerCase().endsWith(`@${env.DOMAIN}`);
-          const sendFn = isInternal ? sendInternalEmail : sendExternalEmail;
-
-          const sendResult = await sendFn(env, {
+          const sendResult = await sendInternalEmail(env, {
             fromHandle: DIPLOMAT_HANDLE,
             fromWallet: diplomatAcct.wallet,
-            to: replyTo,
+            to: fromAddr,
             subject: replySubject,
             body: reply,
             in_reply_to: email.id as string,
@@ -142,15 +153,21 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
           emailsReplied++;
           details.push({
             action: 'email_reply',
-            to: email.from_addr,
+            to: fromAddr,
             subject: replySubject,
-            microbuy: sendResult.microbuy?.tx || null,
+            sender_token: senderToken,
+            microbuy_tx: sendResult.microbuy?.tx || null,
+            microbuy_amount: sendResult.microbuy?.amount || null,
+            microbuy_token: sendResult.microbuy?.tokens_received || null,
+            incoming_body: emailBody.slice(0, 500),
+            reply_body: reply.slice(0, 500),
           });
-          console.log(`[diplomat] Replied to ${email.from_addr}`);
+          console.log(`[diplomat] Replied to ${fromAddr} | microbuy: ${sendResult.microbuy?.tokens_received || 'none'}`);
         } catch (e) {
           details.push({
             action: 'email_reply_error',
             emailId: email.id,
+            from: fromAddr,
             error: (e as Error).message,
           });
           console.log(`[diplomat] Email reply error: ${(e as Error).message}`);
@@ -202,7 +219,7 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
             state.lastMoltbookActionTime = Date.now();
             state.totalPostsCreated++;
             postsCreated++;
-            details.push({ action: 'moltbook_post', title });
+            details.push({ action: 'moltbook_post', title, body: body.slice(0, 500) });
             console.log(`[diplomat] Posted: ${title.slice(0, 50)}...`);
           } catch (e) {
             details.push({ action: 'moltbook_post_error', error: (e as Error).message });
@@ -227,7 +244,13 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
                 state.lastMoltbookActionTime = Date.now();
                 state.totalCommentsLeft++;
                 commentsLeft++;
-                details.push({ action: 'moltbook_comment', postId: post.id, postTitle: post.title });
+                details.push({
+                  action: 'moltbook_comment',
+                  postId: post.id,
+                  postTitle: post.title,
+                  postAuthor: post.author?.name || 'unknown',
+                  comment_body: comment.slice(0, 500),
+                });
                 console.log(`[diplomat] Commented on: ${post.title?.slice(0, 40)}...`);
                 break; // Only ONE comment per cycle
               } catch (e) {
