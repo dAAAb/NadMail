@@ -14,6 +14,7 @@ import { creditsRoutes } from './routes/credits';
 import { proRoutes } from './routes/pro';
 import { agentRoutes } from './routes/agent';
 import { adminRoutes } from './routes/admin';
+import { statsRoutes } from './routes/stats';
 import { handleIncomingEmail } from './email-handler';
 import { runDiplomatCycle } from './diplomat';
 
@@ -281,6 +282,7 @@ app.route('/api/credits', creditsRoutes);
 app.route('/api/pro', proRoutes);
 app.route('/api/agent', agentRoutes);
 app.route('/api/admin', adminRoutes);
+app.route('/api/stats', statsRoutes);
 
 // 匯出 fetch handler (HTTP), email handler (incoming mail), scheduled handler (cron)
 export default {

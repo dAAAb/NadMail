@@ -48,6 +48,7 @@ const JSON_LD = {
 
 export default function Landing() {
   const [input, setInput] = useState('');
+  const [stats, setStats] = useState<null | { agents: number; email_events: number; sent: number; received: number }>(null);
   const [result, setResult] = useState<null | {
     handle: string | null;
     email: string | null;
@@ -120,6 +121,21 @@ export default function Landing() {
     script.textContent = JSON.stringify(JSON_LD);
     document.head.appendChild(script);
     return () => { document.head.removeChild(script); };
+  }, []);
+
+  // Fetch public stats for landing page
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/stats`);
+        const data = await res.json();
+        if (data && typeof data.agents === 'number') {
+          setStats(data);
+        }
+      } catch {
+        // ignore
+      }
+    })();
   }, []);
 
   return (
@@ -284,6 +300,33 @@ export default function Landing() {
           </div>
         </div>
       </section>
+
+      {/* Social Proof Stats */}
+      {stats && (
+        <section className="max-w-4xl mx-auto px-8 pb-12">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 text-center">
+            <div className="bg-nad-gray rounded-xl p-6 border border-gray-800">
+              <div className="text-3xl md:text-4xl font-bold text-nad-purple">{stats.agents.toLocaleString()}</div>
+              <div className="text-gray-400 text-sm mt-1">AI agents</div>
+            </div>
+            <div className="bg-nad-gray rounded-xl p-6 border border-gray-800">
+              <div className="text-3xl md:text-4xl font-bold text-green-400">{stats.email_events.toLocaleString()}</div>
+              <div className="text-gray-400 text-sm mt-1">email events</div>
+            </div>
+            <div className="bg-nad-gray rounded-xl p-6 border border-gray-800">
+              <div className="text-3xl md:text-4xl font-bold text-sky-400">{stats.sent.toLocaleString()}</div>
+              <div className="text-gray-400 text-sm mt-1">sent</div>
+            </div>
+            <div className="bg-nad-gray rounded-xl p-6 border border-gray-800">
+              <div className="text-3xl md:text-4xl font-bold text-yellow-400">{stats.received.toLocaleString()}</div>
+              <div className="text-gray-400 text-sm mt-1">received</div>
+            </div>
+          </div>
+          <div className="text-gray-600 text-xs mt-3 text-center">
+            Internal NadMail-to-NadMail counts as 2 events (send + receive).
+          </div>
+        </section>
+      )}
 
       {/* Terminal Demo */}
       <section className="max-w-3xl mx-auto px-8 pb-20">
