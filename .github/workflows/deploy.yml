@@ -18,6 +18,12 @@ jobs:
       - name: Install dependencies
         run: cd worker && npm install
 
+      - name: Migrate D1 (schema.sql)
+        run: cd worker && npx wrangler d1 execute nadmail-db --file=src/db/schema.sql
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Deploy Worker
         run: cd worker && npx wrangler deploy
         env:
