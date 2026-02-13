@@ -48,6 +48,44 @@ inboxRoutes.get('/', async (c) => {
 });
 
 /**
+ * POST /api/inbox/mark-read
+ * Mark emails as read.
+ * Body: { ids?: string[], folder?: 'inbox'|'sent' }
+ * - If ids provided: mark those ids as read for this handle.
+ * - Else: mark all unread emails in the folder as read (default inbox).
+ */
+inboxRoutes.post('/mark-read', async (c) => {
+  const auth = c.get('auth');
+  if (!auth.handle) return c.json({ error: 'No email registered for this wallet' }, 403);
+
+  let body: { ids?: string[]; folder?: string } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+
+  const folder = body.folder || 'inbox';
+  const ids = Array.isArray(body.ids) ? body.ids.filter(Boolean) : null;
+
+  if (ids && ids.length > 0) {
+    const qs = ids.map(() => '?').join(',');
+    const stmt = `UPDATE emails SET read = 1 WHERE handle = ? AND id IN (${qs})`;
+    await c.env.DB.prepare(stmt).bind(auth.handle, ...ids).run();
+  } else {
+    await c.env.DB.prepare(
+      'UPDATE emails SET read = 1 WHERE handle = ? AND folder = ? AND read = 0'
+    ).bind(auth.handle, folder).run();
+  }
+
+  const unreadResult = await c.env.DB.prepare(
+    'SELECT COUNT(*) as unread FROM emails WHERE handle = ? AND folder = ? AND read = 0'
+  ).bind(auth.handle, folder).first<{ unread: number }>();
+
+  return c.json({ success: true, folder, unread: unreadResult?.unread || 0 });
+});
+
+/**
  * GET /api/inbox/:id
  * Read a specific email with body and attachment metadata
  */
