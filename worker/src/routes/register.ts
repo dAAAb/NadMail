@@ -10,6 +10,7 @@ import { executeNnsPurchase, getDiscountProofs, encodeReferralCode } from '../nn
 
 const PRICE_ORACLE_V2 = '0xdF0e18bb6d8c5385d285C3c67919E99c0dce020d' as const;
 const NNS_REGISTRAR = '0xE18a7550AA35895c87A1069d1B775Fa275Bc93Fb' as const;
+const NNS_PROXY = '0xCc7a1bfF8845573dbF0B3b96e25B9b549d4a2eC7' as const;
 
 const priceOracleAbi = [
   {
@@ -31,14 +32,17 @@ const priceOracleAbi = [
   },
 ] as const;
 
-const registrarAbi = [
+const proxyAbi = [
   {
     inputs: [{ name: 'name', type: 'string' }],
-    name: 'available',
+    name: 'isNameAvailable',
     outputs: [{ name: '', type: 'bool' }],
     stateMutability: 'view' as const,
     type: 'function' as const,
   },
+] as const;
+
+const registrarAbi = [
   {
     inputs: [],
     name: 'getActiveDiscounts',
@@ -562,9 +566,9 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
     // Check availability + get price + get active discounts in parallel
     const queries: [Promise<boolean>, Promise<any>, Promise<any>] = [
       client.readContract({
-        address: NNS_REGISTRAR,
-        abi: registrarAbi,
-        functionName: 'available',
+        address: NNS_PROXY,
+        abi: proxyAbi,
+        functionName: 'isNameAvailable',
         args: [name],
       }),
       client.readContract({
@@ -752,9 +756,9 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
   try {
     const [avail, priceResult] = await Promise.all([
       client.readContract({
-        address: NNS_REGISTRAR,
-        abi: registrarAbi,
-        functionName: 'available',
+        address: NNS_PROXY,
+        abi: proxyAbi,
+        functionName: 'isNameAvailable',
         args: [name],
       }),
       client.readContract({
@@ -876,9 +880,9 @@ registerRoutes.post('/buy-nad-name', authMiddleware(), async (c) => {
     try {
       const [isAvailable, priceResult] = await Promise.all([
         queryClient.readContract({
-          address: NNS_REGISTRAR,
-          abi: registrarAbi,
-          functionName: 'available',
+          address: NNS_PROXY,
+          abi: proxyAbi,
+          functionName: 'isNameAvailable',
           args: [name],
         }),
         queryClient.readContract({
