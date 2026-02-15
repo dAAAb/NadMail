@@ -374,6 +374,157 @@ function UpgradeBanner({
   );
 }
 
+// ─── Proxy Buy Banner ──────────────────────────────────────
+
+function ProxyBuyBanner({
+  auth,
+  setAuth,
+  name,
+}: {
+  auth: AuthState;
+  setAuth: (a: AuthState) => void;
+  name: string;
+}) {
+  const [priceInfo, setPriceInfo] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [buying, setBuying] = useState(false);
+  const [error, setError] = useState('');
+  const [dismissed, setDismissed] = useState(false);
+  const [success, setSuccess] = useState(false);
+
+  useEffect(() => {
+    // Check if user already owns this name
+    fetch(`${API_BASE}/api/register/nad-name-price/${encodeURIComponent(name)}?buyer=${auth.wallet}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.available_nns && data.available_nadmail) {
+          setPriceInfo(data);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [name, auth.wallet]);
+
+  if (loading || dismissed || !priceInfo || success) return null;
+
+  // If user already has this handle, don't show
+  if (auth.handle === name) return null;
+
+  async function handleProxyBuy() {
+    setBuying(true);
+    setError('');
+    try {
+      // Step 1: Get quote
+      const quoteRes = await apiFetch('/api/register/buy-nad-name/quote', auth.token, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const quote = await quoteRes.json();
+      if (!quoteRes.ok) {
+        setError(quote.error || 'Failed to get quote');
+        return;
+      }
+
+      // Step 2: Show payment info
+      setError(`Please send ${quote.price?.total_mon?.toFixed(2) || '?'} MON to ${quote.payment?.deposit_address} on Monad, then paste the tx hash.`);
+
+      // For now, prompt user to send MON manually
+      const txHash = window.prompt(
+        `Send ${quote.price?.total_mon?.toFixed(2)} MON to:\n${quote.payment?.deposit_address}\n\nPaste your transaction hash:`
+      );
+      if (!txHash) {
+        setError('Transaction cancelled');
+        return;
+      }
+
+      // Step 3: Execute purchase
+      const buyRes = await apiFetch('/api/register/buy-nad-name', auth.token, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, tx_hash: txHash }),
+      });
+      const result = await buyRes.json();
+      if (!buyRes.ok) {
+        setError(result.error || 'Purchase failed');
+        return;
+      }
+
+      // Success! Update auth if auto-upgraded
+      if (result.new_token) {
+        const newAuth = { ...auth, handle: result.new_handle || name, token: result.new_token };
+        setAuth(newAuth);
+        localStorage.setItem('nadmail_auth', JSON.stringify(newAuth));
+      }
+      setSuccess(true);
+      setError('');
+    } catch (e: any) {
+      setError(e.message || 'An error occurred');
+    } finally {
+      setBuying(false);
+    }
+  }
+
+  return (
+    <div className="mb-6 bg-gradient-to-r from-purple-900/30 to-yellow-900/20 border border-purple-700 rounded-xl p-4">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-lg font-bold text-white">🛒 Get {name}.nad</h3>
+        <button
+          className="text-gray-400 hover:text-white text-sm"
+          onClick={() => setDismissed(true)}
+        >✕</button>
+      </div>
+      <p className="text-gray-300 text-sm mb-3">
+        Upgrade to <span className="text-nad-purple font-bold">{name}@nadmail.ai</span> and auto-create <span className="text-nad-purple font-mono">${name.toUpperCase()}</span> token
+      </p>
+      {priceInfo.discount && (
+        <div className="text-xs text-gray-400 mb-2 space-y-1">
+          <div className="flex justify-between">
+            <span>Registration fee</span>
+            <span className="line-through text-gray-600">{priceInfo.price_mon.toFixed(2)} MON</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-green-400">Discount: {priceInfo.discount.description}</span>
+            <span className="text-green-400">-{priceInfo.discount.percent}%</span>
+          </div>
+          <div className="flex justify-between">
+            <span>After discount</span>
+            <span className="text-white font-mono">{priceInfo.discounted_price_mon.toFixed(2)} MON</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Service fee ({priceInfo.proxy_buy.service_fee_percent}%)</span>
+            <span>+{priceInfo.proxy_buy.fee_mon.toFixed(2)} MON</span>
+          </div>
+          <div className="flex justify-between border-t border-gray-700 pt-1">
+            <span className="font-bold text-white">Total</span>
+            <span className="text-yellow-300 font-mono font-bold">{priceInfo.proxy_buy.total_mon.toFixed(2)} MON</span>
+          </div>
+        </div>
+      )}
+      {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
+      <div className="flex gap-2">
+        <button
+          disabled={buying}
+          className="flex-1 bg-nad-purple text-white py-2 px-4 rounded-lg font-medium hover:bg-purple-600 transition text-sm disabled:opacity-50"
+          onClick={handleProxyBuy}
+        >
+          {buying ? 'Processing...' : `🛒 Buy via NadMail — ${priceInfo.proxy_buy.total_mon.toFixed(2)} MON`}
+        </button>
+        {priceInfo.referral?.url && (
+          <a
+            href={priceInfo.referral.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="border border-gray-600 text-gray-300 py-2 px-4 rounded-lg hover:bg-gray-800 transition text-sm text-center"
+          >
+            🔗 nad.domains ↗
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Dashboard ──────────────────────────────────────
 
 export default function Dashboard() {
@@ -392,8 +543,9 @@ export default function Dashboard() {
 
   const location = useLocation();
   const { disconnect } = useDisconnect();
-  // Read ?claim= parameter from URL (Landing → Dashboard flow)
+  // Read ?claim= and ?proxybuy= parameters from URL (Landing → Dashboard flow)
   const claimName = new URLSearchParams(location.search).get('claim') || null;
+  const proxyBuyName = new URLSearchParams(location.search).get('proxybuy') || null;
   // Wallet balance for sidebar display
   const walletAddr = auth?.wallet as `0x${string}` | undefined;
   const { data: monBalance } = useBalance({ address: walletAddr, chainId: MONAD_CHAIN_ID });
@@ -483,6 +635,9 @@ export default function Dashboard() {
       <main className="flex-1 p-8 overflow-y-auto">
         {auth.handle?.startsWith('0x') && (
           <UpgradeBanner auth={auth} setAuth={setAuth} claimName={claimName} />
+        )}
+        {proxyBuyName && (
+          <ProxyBuyBanner auth={auth} setAuth={setAuth} name={proxyBuyName} />
         )}
         <Routes>
           <Route index element={<Inbox auth={auth} folder="inbox" />} />

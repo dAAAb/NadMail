@@ -294,7 +294,7 @@ export default function Landing() {
                 {/* Action buttons */}
                 <div className="flex flex-col sm:flex-row gap-2">
                   <a
-                    href={`/dashboard${result.handle ? `?claim=${encodeURIComponent(result.handle)}` : ''}`}
+                    href={`/dashboard${result.handle ? `?claim=${encodeURIComponent(result.handle)}&proxybuy=${encodeURIComponent(result.handle)}` : ''}`}
                     className="inline-block bg-nad-purple text-white px-6 py-2.5 rounded-lg font-medium hover:bg-purple-600 transition text-sm text-center"
                   >
                     {result.price_info?.proxy_buy?.available
