@@ -44,7 +44,7 @@ const monad = {
   id: 143,
   name: 'Monad',
   nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
-  rpcUrls: { default: { http: ['https://monad-mainnet.drpc.org'] } },
+  rpcUrls: { default: { http: ['https://rpc.monad.xyz'] } },
 } as const;
 
 export const registerRoutes = new Hono<{ Bindings: Env }>();
@@ -83,7 +83,7 @@ registerRoutes.get('/nad-names/:address', async (c) => {
   }
 
   const wallet = address.toLowerCase();
-  const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+  const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
 
   let nadNames: string[];
   try {
@@ -164,7 +164,7 @@ registerRoutes.post('/', authMiddleware(), async (c) => {
       isFreeName = true;
     } else {
       // Not in free pool — check if user owns this .nad name on-chain
-      const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+      const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
       try {
         const ownedNames = await getNadNamesForWallet(auth.wallet, rpcUrl);
         const ownsName = ownedNames.some(
@@ -369,7 +369,7 @@ registerRoutes.post('/upgrade-handle', authMiddleware(), async (c) => {
   }
 
   // Verify on-chain ownership
-  const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+  const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
   let ownedNames: string[];
   try {
     ownedNames = await getNadNamesForWallet(auth.wallet, rpcUrl);
@@ -480,7 +480,7 @@ registerRoutes.get('/check/:address', async (c) => {
 
     if (/^0x/i.test(existing.handle)) {
       try {
-        const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org');
+        const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz');
         owned_nad_names = names.map(n => n.toLowerCase());
         upgrade_available = owned_nad_names.length > 0;
       } catch { /* non-critical */ }
@@ -502,7 +502,7 @@ registerRoutes.get('/check/:address', async (c) => {
   // Not registered — check on-chain for .nad names
   let owned_nad_names: string[] = [];
   try {
-    const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org');
+    const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz');
     owned_nad_names = names.map(n => n.toLowerCase());
   } catch { /* non-critical */ }
 
@@ -530,7 +530,7 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
     return c.json({ error: 'Invalid .nad name (3+ chars, alphanumeric + hyphens)' }, 400);
   }
 
-  const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+  const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
   const client = createPublicClient({
     chain: monad,
     transport: http(rpcUrl),
@@ -651,7 +651,7 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
   }
 
   // Query NNS on-chain availability + price
-  const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+  const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
   const client = createPublicClient({ chain: monad, transport: http(rpcUrl) });
 
   let isAvailable: boolean;
@@ -778,7 +778,7 @@ registerRoutes.post('/buy-nad-name', authMiddleware(), async (c) => {
     orderId = order.id;
   } else {
     // No quote — query price on the fly
-    const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+    const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
     const queryClient = createPublicClient({ chain: monad, transport: http(rpcUrl) });
 
     try {

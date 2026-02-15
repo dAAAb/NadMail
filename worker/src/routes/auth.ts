@@ -97,7 +97,7 @@ authRoutes.post('/agent-register', async (c) => {
     let owned_nad_names: string[] = [];
     if (/^0x/i.test(existingAccount.handle)) {
       try {
-        const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org');
+        const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz');
         owned_nad_names = names.map(n => n.toLowerCase());
         upgrade_available = owned_nad_names.length > 0;
       } catch { /* non-critical */ }
@@ -152,7 +152,7 @@ authRoutes.post('/agent-register', async (c) => {
     nadName = `${handle}.nad`;
   } else {
     // Before falling back to 0x, detect owned .nad names for guidance
-    const rpcUrl = c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org';
+    const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
     try {
       const ownedNames = await getNadNamesForWallet(wallet, rpcUrl);
       detectedNadNames = ownedNames.map(n => n.toLowerCase());
@@ -316,7 +316,7 @@ authRoutes.post('/verify', async (c) => {
 
   if (account && /^0x/i.test(account.handle)) {
     try {
-      const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://monad-mainnet.drpc.org');
+      const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz');
       owned_nad_names = names.map(n => n.toLowerCase());
       upgrade_available = owned_nad_names.length > 0;
     } catch { /* non-critical */ }

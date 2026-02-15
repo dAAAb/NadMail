@@ -15,7 +15,7 @@ const monad = {
   id: 143,
   name: 'Monad',
   nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
-  rpcUrls: { default: { http: ['https://monad-mainnet.drpc.org'] } },
+  rpcUrls: { default: { http: ['https://rpc.monad.xyz'] } },
 } as const;
 
 const nnsReadAbi = [
