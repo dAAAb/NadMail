@@ -372,10 +372,10 @@ registerRoutes.post('/upgrade-handle', authMiddleware(), async (c) => {
 
   const oldHandle = account.handle;
 
-  // Must be upgrading from a 0x handle
-  if (!oldHandle.startsWith('0x')) {
+  // Allow switching between .nad names (not just 0x → .nad)
+  if (oldHandle === newHandle) {
     return c.json({
-      error: 'Your account already has a .nad name handle',
+      error: 'Already using this handle',
       current_handle: oldHandle,
     }, 400);
   }
@@ -495,17 +495,18 @@ registerRoutes.get('/check/:address', async (c) => {
   ).bind(wallet).first<{ handle: string; token_address: string | null; token_symbol: string | null; nad_name: string | null }>();
 
   if (existing) {
-    // For registered 0x handle users, check if they have .nad names available
-    let upgrade_available = false;
+    // Check all .nad names owned by this wallet (for handle switching)
     let owned_nad_names: string[] = [];
+    let switch_available = false;
 
-    if (/^0x/i.test(existing.handle)) {
-      try {
-        const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz');
-        owned_nad_names = names.map(n => n.toLowerCase());
-        upgrade_available = owned_nad_names.length > 0;
-      } catch { /* non-critical */ }
-    }
+    try {
+      const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz');
+      owned_nad_names = names.map(n => n.toLowerCase());
+      // Can switch if: has 0x handle with .nad names, or has multiple .nad names
+      switch_available = /^0x/i.test(existing.handle)
+        ? owned_nad_names.length > 0
+        : owned_nad_names.length > 1 || (owned_nad_names.length === 1 && !owned_nad_names.includes(existing.handle));
+    } catch { /* non-critical */ }
 
     return c.json({
       wallet,
@@ -515,8 +516,9 @@ registerRoutes.get('/check/:address', async (c) => {
       nad_name: existing.nad_name,
       token_address: existing.token_address,
       token_symbol: existing.token_symbol,
-      upgrade_available,
-      owned_nad_names: upgrade_available ? owned_nad_names : undefined,
+      upgrade_available: /^0x/i.test(existing.handle) && owned_nad_names.length > 0,
+      switch_available,
+      owned_nad_names: owned_nad_names.length > 0 ? owned_nad_names : undefined,
     });
   }
 
