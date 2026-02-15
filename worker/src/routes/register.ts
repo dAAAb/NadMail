@@ -626,13 +626,8 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
       }
     }
 
-    // If no buyer-specific discount, show best available discount
-    if (!bestDiscount) {
-      const best = discounts.reduce((max, d) => d.percent > max.percent ? d : max, { percent: 0 } as any);
-      if (best.percent > 0) {
-        bestDiscount = { description: best.description, percent: best.percent, key: best.key };
-      }
-    }
+    // Only show discount if buyer-specific (with proof).
+    // Without buyer address, just show available_discounts list.
 
     const discountPercent = bestDiscount?.percent || 0;
     const discountedPriceWei = basePriceWei - (basePriceWei * BigInt(discountPercent)) / 100n;
