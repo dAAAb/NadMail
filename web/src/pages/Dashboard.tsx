@@ -391,6 +391,9 @@ function ProxyBuyBanner({
   const [error, setError] = useState('');
   const [dismissed, setDismissed] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [step, setStep] = useState<'ready' | 'awaiting_payment' | 'confirming'>('ready');
+  const [quote, setQuote] = useState<any>(null);
+  const [txHashInput, setTxHashInput] = useState('');
 
   useEffect(() => {
     // Check if user already owns this name
@@ -410,47 +413,49 @@ function ProxyBuyBanner({
   // If user already has this handle, don't show
   if (auth.handle === name) return null;
 
-  async function handleProxyBuy() {
+  async function handleGetQuote() {
     setBuying(true);
     setError('');
     try {
-      // Step 1: Get quote
       const quoteRes = await apiFetch('/api/register/buy-nad-name/quote', auth.token, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
       });
-      const quote = await quoteRes.json();
+      const data = await quoteRes.json();
       if (!quoteRes.ok) {
-        setError(quote.error || 'Failed to get quote');
+        setError(data.error || 'Failed to get quote');
         return;
       }
+      setQuote(data);
+      setStep('awaiting_payment');
+    } catch (e: any) {
+      setError(e.message || 'An error occurred');
+    } finally {
+      setBuying(false);
+    }
+  }
 
-      // Step 2: Show payment info
-      setError(`Please send ${quote.price?.total_mon?.toFixed(2) || '?'} MON to ${quote.payment?.deposit_address} on Monad, then paste the tx hash.`);
-
-      // For now, prompt user to send MON manually
-      const txHash = window.prompt(
-        `Send ${quote.price?.total_mon?.toFixed(2)} MON to:\n${quote.payment?.deposit_address}\n\nPaste your transaction hash:`
-      );
-      if (!txHash) {
-        setError('Transaction cancelled');
-        return;
-      }
-
-      // Step 3: Execute purchase
+  async function handleConfirmPayment() {
+    if (!txHashInput.startsWith('0x') || txHashInput.length < 10) {
+      setError('Please enter a valid transaction hash (0x...)');
+      return;
+    }
+    setBuying(true);
+    setError('');
+    setStep('confirming');
+    try {
       const buyRes = await apiFetch('/api/register/buy-nad-name', auth.token, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, tx_hash: txHash }),
+        body: JSON.stringify({ name, tx_hash: txHashInput }),
       });
       const result = await buyRes.json();
       if (!buyRes.ok) {
         setError(result.error || 'Purchase failed');
+        setStep('awaiting_payment');
         return;
       }
-
-      // Success! Update auth if auto-upgraded
       if (result.new_token) {
         const newAuth = { ...auth, handle: result.new_handle || name, token: result.new_token };
         setAuth(newAuth);
@@ -460,6 +465,7 @@ function ProxyBuyBanner({
       setError('');
     } catch (e: any) {
       setError(e.message || 'An error occurred');
+      setStep('awaiting_payment');
     } finally {
       setBuying(false);
     }
@@ -502,25 +508,64 @@ function ProxyBuyBanner({
         </div>
       )}
       {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
-      <div className="flex gap-2">
-        <button
-          disabled={buying}
-          className="flex-1 bg-nad-purple text-white py-2 px-4 rounded-lg font-medium hover:bg-purple-600 transition text-sm disabled:opacity-50"
-          onClick={handleProxyBuy}
-        >
-          {buying ? 'Processing...' : `🛒 Buy via NadMail — ${priceInfo.proxy_buy.total_mon.toFixed(2)} MON`}
-        </button>
-        {priceInfo.referral?.url && (
-          <a
-            href={priceInfo.referral.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="border border-gray-600 text-gray-300 py-2 px-4 rounded-lg hover:bg-gray-800 transition text-sm text-center"
+
+      {step === 'ready' && (
+        <div className="flex gap-2">
+          <button
+            disabled={buying}
+            className="flex-1 bg-nad-purple text-white py-2 px-4 rounded-lg font-medium hover:bg-purple-600 transition text-sm disabled:opacity-50"
+            onClick={handleGetQuote}
           >
-            🔗 nad.domains ↗
-          </a>
-        )}
-      </div>
+            {buying ? 'Loading...' : `🛒 Buy via NadMail — ${priceInfo.proxy_buy.total_mon.toFixed(2)} MON`}
+          </button>
+          {priceInfo.referral?.url && (
+            <a
+              href={priceInfo.referral.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="border border-gray-600 text-gray-300 py-2 px-4 rounded-lg hover:bg-gray-800 transition text-sm text-center"
+            >
+              🔗 nad.domains ↗
+            </a>
+          )}
+        </div>
+      )}
+
+      {step === 'awaiting_payment' && quote && (
+        <div className="space-y-3">
+          <div className="bg-gray-800 rounded-lg p-3 text-xs">
+            <p className="text-yellow-300 font-bold mb-2">Step 1: Send MON</p>
+            <p className="text-gray-300 mb-1">
+              Send exactly <span className="text-yellow-300 font-mono font-bold">{quote.price?.total_mon?.toFixed(4)} MON</span> to:
+            </p>
+            <p className="text-green-400 font-mono text-xs break-all select-all">{quote.payment?.deposit_address}</p>
+            <p className="text-gray-500 mt-1">Chain: Monad (chainId: 143)</p>
+          </div>
+          <div>
+            <p className="text-yellow-300 font-bold text-xs mb-1">Step 2: Paste transaction hash</p>
+            <input
+              type="text"
+              placeholder="0x..."
+              value={txHashInput}
+              onChange={e => setTxHashInput(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-600 text-white rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-purple-500"
+            />
+          </div>
+          <button
+            disabled={buying || !txHashInput}
+            className="w-full bg-green-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-green-700 transition text-sm disabled:opacity-50"
+            onClick={handleConfirmPayment}
+          >
+            {buying ? 'Confirming...' : '✅ Confirm Payment'}
+          </button>
+        </div>
+      )}
+
+      {step === 'confirming' && (
+        <div className="text-center py-4">
+          <p className="text-yellow-300 text-sm animate-pulse">⏳ Verifying payment & registering {name}.nad...</p>
+        </div>
+      )}
     </div>
   );
 }
