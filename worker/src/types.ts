@@ -18,6 +18,9 @@ export interface Env {
   WALLET_PRIVATE_KEY?: string;   // Worker 錢包私鑰，用於代付 token 建立 + micro-buy
   RESEND_API_KEY?: string;       // Resend.com API Key，用於外部寄信
   WALLET_ADDRESS?: string;       // Worker 錢包公開地址，用於收取 credit 購買費用
+  SERVICE_FEE_PERCENT?: string;  // Proxy-buy 服務費率 (default: 15%)
+  FEE_RECIPIENT?: string;       // 服務費收款地址 (default: diplomat.nad)
+  NNS_REFERRER?: string;        // NNS referral 地址 (default: diplomat.nad)
 
   // Admin
   ADMIN_SECRET?: string;         // Admin API secret for /api/admin/* endpoints

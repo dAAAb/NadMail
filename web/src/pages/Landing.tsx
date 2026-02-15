@@ -58,13 +58,14 @@ export default function Landing() {
     upgrade_available?: boolean;
     owned_nad_names?: string[];
     has_nad_name?: boolean;
-    price_info?: { 
-      price_mon: number; 
-      display_price_mon?: number;
-      discount_percent?: number;
-      final_price_mon?: number;
-      source?: string;
-      proxy_buy: { total_mon: number; fee_percent: number; available: boolean } 
+    price_info?: {
+      price_mon: number;
+      price_wei: string;
+      discount?: { description: string; percent: number; buyer_eligible?: boolean } | null;
+      discounted_price_mon: number;
+      proxy_buy: { service_fee_percent: number; fee_mon: number; total_mon: number; total_wei: string; available: boolean; deposit_address: string };
+      referral?: { url: string; commission_percent: number; referrer: string };
+      available_discounts?: { description: string; percent: number }[];
     } | null;
   }>(null);
   const [checking, setChecking] = useState(false);
@@ -246,26 +247,42 @@ export default function Landing() {
                 </p>
                 {result.price_info && result.price_info.proxy_buy?.available && (
                   <div className="bg-yellow-900/20 border border-yellow-800 rounded-lg p-3 mb-4">
-                    <p className="text-yellow-300 text-sm font-medium mb-1">
+                    <p className="text-yellow-300 text-sm font-medium mb-2">
                       {result.handle}.nad is available on NNS!
                     </p>
-                    <p className="text-gray-400 text-xs">
-                      {result.price_info.discount_percent ? (
-                        <>
-                          <span className="line-through">Price: ~{result.price_info.price_mon.toFixed(2)} MON</span>
-                          <span className="text-green-400 ml-2">Discount: -{result.price_info.discount_percent}%</span>
-                          <br />
-                          <span className="text-yellow-300 font-mono">Final: ~{result.price_info.final_price_mon?.toFixed(2) || result.price_info.price_mon.toFixed(2)} MON</span>
-                          <span className="text-gray-500"> (+{result.price_info.proxy_buy.fee_percent}% fee = </span>
-                          <span className="text-yellow-300 font-mono">{result.price_info.proxy_buy.total_mon.toFixed(2)} MON</span>)
-                          <span className="text-gray-500 text-xs"> (source: {result.price_info.source || 'contract'})</span>
-                        </>
-                      ) : (
-                        <>
-                          Price: ~{result.price_info.price_mon.toFixed(2)} MON (+{result.price_info.proxy_buy.fee_percent}% service fee = <span className="text-yellow-300 font-mono">{result.price_info.proxy_buy.total_mon.toFixed(2)} MON</span>)
-                        </>
+                    <div className="text-gray-400 text-xs space-y-1">
+                      {/* Base price */}
+                      <div className="flex justify-between">
+                        <span>Registration fee</span>
+                        <span className={result.price_info.discount ? 'line-through text-gray-600' : 'text-white font-mono'}>
+                          {result.price_info.price_mon.toFixed(2)} MON
+                        </span>
+                      </div>
+                      {/* Discount */}
+                      {result.price_info.discount && (
+                        <div className="flex justify-between">
+                          <span className="text-green-400">Discount: {result.price_info.discount.description}</span>
+                          <span className="text-green-400 font-mono">-{result.price_info.discount.percent}%</span>
+                        </div>
                       )}
-                    </p>
+                      {/* Discounted price */}
+                      {result.price_info.discount && (
+                        <div className="flex justify-between">
+                          <span>After discount</span>
+                          <span className="text-white font-mono">{result.price_info.discounted_price_mon.toFixed(2)} MON</span>
+                        </div>
+                      )}
+                      {/* Service fee */}
+                      <div className="flex justify-between">
+                        <span>Service fee ({result.price_info.proxy_buy.service_fee_percent}%)</span>
+                        <span className="font-mono">+{result.price_info.proxy_buy.fee_mon.toFixed(2)} MON</span>
+                      </div>
+                      {/* Total */}
+                      <div className="flex justify-between border-t border-gray-700 pt-1 mt-1">
+                        <span className="font-bold text-white">Total</span>
+                        <span className="text-yellow-300 font-mono font-bold">{result.price_info.proxy_buy.total_mon.toFixed(2)} MON</span>
+                      </div>
+                    </div>
                   </div>
                 )}
                 {result.owned_nad_names && result.owned_nad_names.length > 0 && (
@@ -273,14 +290,27 @@ export default function Landing() {
                     This wallet owns: {result.owned_nad_names.map(n => `${n}.nad`).join(', ')}
                   </p>
                 )}
-                <a
-                  href={`/dashboard${result.handle ? `?claim=${encodeURIComponent(result.handle)}` : ''}`}
-                  className="inline-block bg-nad-purple text-white px-6 py-2.5 rounded-lg font-medium hover:bg-purple-600 transition text-sm"
-                >
-                  {result.price_info?.proxy_buy?.available
-                    ? `Claim Now — ${result.price_info.proxy_buy.total_mon.toFixed(2)} MON`
-                    : 'Claim Now'}
-                </a>
+                {/* Action buttons */}
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <a
+                    href={`/dashboard${result.handle ? `?claim=${encodeURIComponent(result.handle)}` : ''}`}
+                    className="inline-block bg-nad-purple text-white px-6 py-2.5 rounded-lg font-medium hover:bg-purple-600 transition text-sm text-center"
+                  >
+                    {result.price_info?.proxy_buy?.available
+                      ? `🛒 Buy via NadMail — ${result.price_info.proxy_buy.total_mon.toFixed(2)} MON`
+                      : 'Claim Now'}
+                  </a>
+                  {result.price_info?.referral?.url && (
+                    <a
+                      href={result.price_info.referral.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block border border-gray-600 text-gray-300 px-6 py-2.5 rounded-lg font-medium hover:bg-gray-800 transition text-sm text-center"
+                    >
+                      🔗 Buy on nad.domains ↗
+                    </a>
+                  )}
+                </div>
               </>
             )}
           </div>

@@ -104,6 +104,51 @@ function decodeNnsData<T = any>(encoded: string): T {
   return JSON.parse(json);
 }
 
+// ── NNS Discount Proofs API ──
+
+interface DiscountProof {
+  discountKey: string;
+  validationData: string;
+}
+
+interface ActiveDiscount {
+  active: boolean;
+  discountVerifier: string;
+  key: string;           // bytes32
+  discountPercent: bigint;
+  description: string;
+}
+
+export async function getDiscountProofs(
+  claimer: string,
+  name: string,
+): Promise<DiscountProof[]> {
+  try {
+    const url = `${NNS_API_BASE}/discount-proofs?claimer=${claimer}&chainId=143&name=${encodeURIComponent(name)}`;
+    const response = await fetch(url);
+    if (!response.ok) return [];
+    const body = await response.json() as any;
+    if (body.success && Array.isArray(body.proofs)) {
+      return body.proofs;
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+// ── Referral Code 編解碼（逆向自 nad.domains module 45708）──
+
+export function encodeReferralCode(address: string): string {
+  const b64 = btoa(address);
+  return caesarShift(b64, 9);
+}
+
+export function decodeReferralCode(rc: string): string {
+  const b64 = caesarShift(rc, -9);
+  return atob(b64);
+}
+
 // ── NNS API 簽名取得 ──
 
 interface NnsSignatureResponse {
@@ -118,14 +163,19 @@ const RETRY_DELAY_MS = 1000;
 export async function getNnsRegistrationSignature(
   name: string,
   nameOwner: string,
+  options?: {
+    referrer?: string;
+    discountKey?: string;
+    discountClaimProof?: string;
+  },
 ): Promise<NnsSignatureResponse> {
   const data = {
     name,
     nameOwner,
     setAsPrimaryName: false,
-    referrer: ZERO_ADDRESS,
-    discountKey: ZERO_BYTES32,
-    discountClaimProof: '0x',
+    referrer: options?.referrer || ZERO_ADDRESS,
+    discountKey: options?.discountKey || ZERO_BYTES32,
+    discountClaimProof: options?.discountClaimProof || '0x',
     attributes: [],
     paymentToken: ZERO_ADDRESS,
     chainId: '143',
@@ -210,15 +260,60 @@ export async function executeNnsPurchase(
   nameOwner: string,
   priceWei: bigint,
   env: Env,
+  options?: {
+    referrer?: string;
+    discountKey?: string;
+    discountClaimProof?: string;
+    discountPercent?: number;
+  },
 ): Promise<ProxyPurchaseResult> {
   if (!env.WALLET_PRIVATE_KEY) {
     throw new Error('Worker wallet not configured');
   }
 
-  // 1. 取得 NNS 註冊簽名
-  const { nonce, deadline, signature } = await getNnsRegistrationSignature(name, nameOwner);
+  // 1. 嘗試取得折扣 proof（如果沒有提供）
+  let discountKey = options?.discountKey || ZERO_BYTES32;
+  let discountClaimProof = options?.discountClaimProof || '0x';
+  let discountPercent = options?.discountPercent || 0;
 
-  // 2. 建立 viem clients（沿用 nns-transfer.ts 的模式）
+  if (discountKey === ZERO_BYTES32) {
+    try {
+      const proofs = await getDiscountProofs(nameOwner, name);
+      // 找到最大折扣
+      if (proofs.length > 0) {
+        // 需要比對 activeDiscounts 來找折扣百分比
+        // 暫時用 DayOneMainnet (Xmas Gift 50%) 作為預設最佳折扣
+        const bestProof = proofs.find(p =>
+          p.discountKey === 'DayOneMainnet' && p.validationData !== ZERO_BYTES32
+        ) || proofs.find(p => p.validationData !== ZERO_BYTES32);
+
+        if (bestProof) {
+          // 將 discountKey 轉為 bytes32
+          const keyBytes = new TextEncoder().encode(bestProof.discountKey);
+          const padded = new Uint8Array(32);
+          padded.set(keyBytes.slice(0, 32));
+          discountKey = '0x' + Array.from(padded).map(b => b.toString(16).padStart(2, '0')).join('') as `0x${string}`;
+          discountClaimProof = bestProof.validationData;
+          // Note: actual discount % will be applied by the contract
+          console.log(`[nns-purchase] Using discount: ${bestProof.discountKey}`);
+        }
+      }
+    } catch (e: any) {
+      console.log(`[nns-purchase] Discount lookup failed, proceeding without: ${e.message}`);
+    }
+  }
+
+  // 2. Referrer（使用 diplomat.nad 作為預設）
+  const referrer = options?.referrer || (env as any).NNS_REFERRER || ZERO_ADDRESS;
+
+  // 3. 取得 NNS 註冊簽名
+  const { nonce, deadline, signature } = await getNnsRegistrationSignature(name, nameOwner, {
+    referrer,
+    discountKey,
+    discountClaimProof,
+  });
+
+  // 4. 建立 viem clients
   const account = privateKeyToAccount(env.WALLET_PRIVATE_KEY as Hex);
   const walletClient = createWalletClient({
     account,
@@ -230,7 +325,13 @@ export async function executeNnsPurchase(
     transport: http(env.MONAD_RPC_URL),
   });
 
-  // 3. 呼叫 registerWithSignature（Worker 付 MON，NFT 鑄造給 nameOwner）
+  // 5. 計算實際付款金額（含折扣）
+  let paymentValue = priceWei;
+  if (discountPercent > 0) {
+    paymentValue = priceWei - (priceWei * BigInt(discountPercent)) / 100n;
+  }
+
+  // 6. 呼叫 registerWithSignature（Worker 付 MON，NFT 鑄造給 nameOwner）
   const hash = await walletClient.writeContract({
     address: NNS_REGISTRAR,
     abi: registerWithSignatureAbi,
@@ -240,9 +341,9 @@ export async function executeNnsPurchase(
         name,
         nameOwner: nameOwner as `0x${string}`,
         setAsPrimaryName: false,
-        referrer: ZERO_ADDRESS,
-        discountKey: ZERO_BYTES32,
-        discountClaimProof: '0x' as Hex,
+        referrer: referrer as `0x${string}`,
+        discountKey: discountKey as `0x${string}`,
+        discountClaimProof: discountClaimProof as Hex,
         nonce: BigInt(nonce),
         deadline: BigInt(deadline),
         attributes: [],
@@ -250,11 +351,11 @@ export async function executeNnsPurchase(
       },
       signature as Hex,
     ],
-    value: priceWei,
-    gas: 800_000n,
+    value: paymentValue,
+    gas: 1_000_000n,
   });
 
-  // 4. 等待確認
+  // 7. 等待確認
   const receipt = await publicClient.waitForTransactionReceipt({
     hash,
     timeout: 30_000,

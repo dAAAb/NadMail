@@ -6,7 +6,7 @@ import { createToken as createNadFunToken, distributeInitialTokens } from '../na
 import { transferNadName } from '../nns-transfer';
 import { getNadNamesForWallet } from '../nns-lookup';
 import { getNnsPriceFromFrontend } from '../nns-price-scraper';
-import { executeNnsPurchase } from '../nns-purchase';
+import { executeNnsPurchase, getDiscountProofs, encodeReferralCode } from '../nns-purchase';
 
 const PRICE_ORACLE_V2 = '0xdF0e18bb6d8c5385d285C3c67919E99c0dce020d' as const;
 const NNS_REGISTRAR = '0xE18a7550AA35895c87A1069d1B775Fa275Bc93Fb' as const;
@@ -36,6 +36,22 @@ const registrarAbi = [
     inputs: [{ name: 'name', type: 'string' }],
     name: 'available',
     outputs: [{ name: '', type: 'bool' }],
+    stateMutability: 'view' as const,
+    type: 'function' as const,
+  },
+  {
+    inputs: [],
+    name: 'getActiveDiscounts',
+    outputs: [{
+      components: [
+        { name: 'active', type: 'bool' },
+        { name: 'discountVerifier', type: 'address' },
+        { name: 'key', type: 'bytes32' },
+        { name: 'discountPercent', type: 'uint256' },
+        { name: 'description', type: 'string' },
+      ],
+      type: 'tuple[]',
+    }],
     stateMutability: 'view' as const,
     type: 'function' as const,
   },
@@ -526,6 +542,7 @@ registerRoutes.get('/check/:address', async (c) => {
  */
 registerRoutes.get('/nad-name-price/:name', async (c) => {
   const name = c.req.param('name').toLowerCase().replace(/\.nad$/, '');
+  const buyerAddress = c.req.query('buyer'); // optional: check discounts for this buyer
 
   if (!name || name.length < 3 || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) {
     return c.json({ error: 'Invalid .nad name (3+ chars, alphanumeric + hyphens)' }, 400);
@@ -537,9 +554,13 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
     transport: http(rpcUrl),
   });
 
+  const SERVICE_FEE_PERCENT = parseInt(c.env.SERVICE_FEE_PERCENT || '15', 10);
+  const FEE_RECIPIENT = c.env.FEE_RECIPIENT || c.env.WALLET_ADDRESS;
+  const NNS_REFERRER = (c.env as any).NNS_REFERRER || '0x7e0F24854c7189C9B709132fEb6e953D4EC74424'; // diplomat.nad
+
   try {
-    // Check availability + get price in parallel
-    const [isAvailable, priceResult, frontendPrice] = await Promise.all([
+    // Check availability + get price + get active discounts in parallel
+    const queries: [Promise<boolean>, Promise<any>, Promise<any>] = [
       client.readContract({
         address: NNS_REGISTRAR,
         abi: registrarAbi,
@@ -552,57 +573,119 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
         functionName: 'getRegisteringPriceInToken',
         args: [name, '0x0000000000000000000000000000000000000000'],
       }),
-      // Try to scrape price from nad.domains frontend (includes discounts)
-      getNnsPriceFromFrontend(name),
-    ]);
+      client.readContract({
+        address: NNS_REGISTRAR,
+        abi: registrarAbi,
+        functionName: 'getActiveDiscounts',
+        args: [],
+      }),
+    ];
 
-    const basePriceWei = priceResult.base;
+    const [isAvailable, priceResult, activeDiscounts] = await Promise.all(queries);
+
+    const basePriceWei = priceResult.base as bigint;
     const priceMon = parseFloat(formatEther(basePriceWei));
-    const CONVENIENCE_FEE = 0.15; // 15%
-    const totalWei = (basePriceWei * 115n) / 100n;
 
-    // Use frontend price if available (includes discounts), otherwise use contract price
-    const displayPriceMon = frontendPrice?.price || priceMon;
-    const discountPercent = frontendPrice?.discount || 0;
-    const finalPriceMon = displayPriceMon * (1 - discountPercent / 100);
-    const totalWithFee = Math.ceil(finalPriceMon * (1 + CONVENIENCE_FEE) * 100) / 100;
+    // Format active discounts
+    const discounts = (activeDiscounts as any[]).map((d: any) => ({
+      description: d.description,
+      percent: Number(d.discountPercent),
+      key: d.key,
+      active: d.active,
+    }));
+
+    // Find best discount if buyer address provided
+    let bestDiscount: { description: string; percent: number; key: string; proof?: string } | null = null;
+
+    if (buyerAddress) {
+      try {
+        const proofs = await getDiscountProofs(buyerAddress, name);
+        for (const proof of proofs) {
+          if (proof.validationData === '0x0000000000000000000000000000000000000000000000000000000000000000') continue;
+          const matching = discounts.find(d => {
+            // Compare discount key (decode bytes32 to string)
+            const keyHex = d.key.replace(/0+$/, '');
+            const keyStr = Buffer.from(keyHex.replace('0x', ''), 'hex').toString('utf-8').replace(/\0/g, '');
+            return keyStr === proof.discountKey;
+          });
+          if (matching && (!bestDiscount || matching.percent > bestDiscount.percent)) {
+            bestDiscount = {
+              description: matching.description,
+              percent: matching.percent,
+              key: matching.key,
+              proof: proof.validationData,
+            };
+          }
+        }
+      } catch (e: any) {
+        console.log(`[nad-name-price] Discount proof lookup failed: ${e.message}`);
+      }
+    }
+
+    // If no buyer-specific discount, show best available discount
+    if (!bestDiscount) {
+      const best = discounts.reduce((max, d) => d.percent > max.percent ? d : max, { percent: 0 } as any);
+      if (best.percent > 0) {
+        bestDiscount = { description: best.description, percent: best.percent, key: best.key };
+      }
+    }
+
+    const discountPercent = bestDiscount?.percent || 0;
+    const discountedPriceWei = basePriceWei - (basePriceWei * BigInt(discountPercent)) / 100n;
+    const discountedPriceMon = parseFloat(formatEther(discountedPriceWei));
+    const feeWei = (discountedPriceWei * BigInt(SERVICE_FEE_PERCENT)) / 100n;
+    const totalWei = discountedPriceWei + feeWei;
+    const feeMon = parseFloat(formatEther(feeWei));
+    const totalMon = parseFloat(formatEther(totalWei));
 
     // Also check if already registered in NadMail
     const nadmailTaken = await c.env.DB.prepare(
       'SELECT handle FROM accounts WHERE handle = ?'
     ).bind(name).first();
 
+    // Generate referral URL
+    const referralUrl = `https://app.nad.domains?rc=${encodeReferralCode(NNS_REFERRER)}`;
+
     return c.json({
       name,
       nad_name: `${name}.nad`,
       available_nns: isAvailable,
       available_nadmail: !nadmailTaken,
-      price_mon: priceMon,              // 原始價格（合約）
-      display_price_mon: displayPriceMon, // 顯示價格（含折扣）
-      discount_percent: discountPercent,  // 折扣百分比
-      final_price_mon: finalPriceMon,    // 最終價格（折扣後）
+
+      // Pricing
+      price_mon: priceMon,
       price_wei: basePriceWei.toString(),
-      source: frontendPrice ? 'scraped' : 'contract',
+      discount: bestDiscount ? {
+        description: bestDiscount.description,
+        percent: bestDiscount.percent,
+        buyer_eligible: !!bestDiscount.proof,
+      } : null,
+      discounted_price_mon: discountedPriceMon,
+      discounted_price_wei: discountedPriceWei.toString(),
+
+      // Proxy-buy
       proxy_buy: {
-        fee_percent: CONVENIENCE_FEE * 100,
-        total_mon: totalWithFee,
+        service_fee_percent: SERVICE_FEE_PERCENT,
+        fee_mon: Math.ceil(feeMon * 100) / 100,
+        total_mon: Math.ceil(totalMon * 100) / 100,
         total_wei: totalWei.toString(),
         available: isAvailable && !nadmailTaken,
-        method: 'POST /api/register/buy-nad-name/quote',
-        body: `{ "name": "${name}" }`,
-        flow: [
-          '1. POST /api/register/buy-nad-name/quote { "name": "..." } → get price + deposit_address',
-          '2. Send MON to deposit_address on Monad chain',
-          '3. POST /api/register/buy-nad-name { "name": "...", "tx_hash": "0x..." } → purchase executed',
-        ],
         deposit_address: c.env.WALLET_ADDRESS,
+        fee_recipient: FEE_RECIPIENT,
       },
-      buy_direct_url: `https://app.nad.domains/`,
-      pricing_reference: {
-        '5+ chars': '~691 MON',
-        '4 chars': '~1,726 MON',
-        '3 chars': '~5,694 MON',
+
+      // Referral (buy directly on nad.domains)
+      referral: {
+        url: referralUrl,
+        commission_percent: 10,
+        referrer: 'diplomat.nad',
       },
+
+      // Available discounts
+      available_discounts: discounts.filter(d => d.active).map(d => ({
+        description: d.description,
+        percent: d.percent,
+      })),
     });
   } catch (e: any) {
     console.log(`[nad-name-price] Query failed for ${name}: ${e.message}`);
@@ -610,12 +693,8 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
       name,
       nad_name: `${name}.nad`,
       error: 'Failed to query NNS pricing contract',
+      detail: e.message,
       buy_direct_url: 'https://app.nad.domains/',
-      pricing_reference: {
-        '5+ chars': '~691 MON',
-        '4 chars': '~1,726 MON',
-        '3 chars': '~5,694 MON',
-      },
     }, 500);
   }
 });
