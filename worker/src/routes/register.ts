@@ -626,8 +626,22 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
       }
     }
 
-    // Only show discount if buyer-specific (with proof).
-    // Without buyer address, just show available_discounts list.
+    // Default: show Xmas Gift (DayOneMainnet) 50% discount
+    // If buyer-specific discount found, use that instead
+    if (!bestDiscount) {
+      const xmasDiscount = discounts.find(d => {
+        const keyHex = (d.key as string).replace(/0+$/, '');
+        const keyStr = Buffer.from(keyHex.replace('0x', ''), 'hex').toString('utf-8').replace(/\0/g, '');
+        return keyStr === 'DayOneMainnet';
+      });
+      if (xmasDiscount) {
+        bestDiscount = {
+          description: xmasDiscount.description, // "Xmas Gift"
+          percent: xmasDiscount.percent,
+          key: xmasDiscount.key as string,
+        };
+      }
+    }
 
     const discountPercent = bestDiscount?.percent || 0;
     const discountedPriceWei = basePriceWei - (basePriceWei * BigInt(discountPercent)) / 100n;
@@ -680,11 +694,11 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
         referrer: 'diplomat.nad',
       },
 
-      // Available discounts
-      available_discounts: discounts.filter(d => d.active).map(d => ({
-        description: d.description,
-        percent: d.percent,
-      })),
+      // Available discounts (hidden for now, kept in code)
+      // available_discounts: discounts.filter(d => d.active).map(d => ({
+      //   description: d.description,
+      //   percent: d.percent,
+      // })),
     });
   } catch (e: any) {
     console.log(`[nad-name-price] Query failed for ${name}: ${e.message}`);
