@@ -58,7 +58,14 @@ export default function Landing() {
     upgrade_available?: boolean;
     owned_nad_names?: string[];
     has_nad_name?: boolean;
-    price_info?: { price_mon: number; proxy_buy: { total_mon: number; fee_percent: number; available: boolean } } | null;
+    price_info?: { 
+      price_mon: number; 
+      display_price_mon?: number;
+      discount_percent?: number;
+      final_price_mon?: number;
+      source?: string;
+      proxy_buy: { total_mon: number; fee_percent: number; available: boolean } 
+    } | null;
   }>(null);
   const [checking, setChecking] = useState(false);
 
@@ -243,7 +250,21 @@ export default function Landing() {
                       {result.handle}.nad is available on NNS!
                     </p>
                     <p className="text-gray-400 text-xs">
-                      Price: ~{result.price_info.price_mon.toFixed(2)} MON (+{result.price_info.proxy_buy.fee_percent}% service fee = <span className="text-yellow-300 font-mono">{result.price_info.proxy_buy.total_mon.toFixed(2)} MON</span>)
+                      {result.price_info.discount_percent ? (
+                        <>
+                          <span className="line-through">Price: ~{result.price_info.price_mon.toFixed(2)} MON</span>
+                          <span className="text-green-400 ml-2">Discount: -{result.price_info.discount_percent}%</span>
+                          <br />
+                          <span className="text-yellow-300 font-mono">Final: ~{result.price_info.final_price_mon?.toFixed(2) || result.price_info.price_mon.toFixed(2)} MON</span>
+                          <span className="text-gray-500"> (+{result.price_info.proxy_buy.fee_percent}% fee = </span>
+                          <span className="text-yellow-300 font-mono">{result.price_info.proxy_buy.total_mon.toFixed(2)} MON</span>)
+                          <span className="text-gray-500 text-xs"> (source: {result.price_info.source || 'contract'})</span>
+                        </>
+                      ) : (
+                        <>
+                          Price: ~{result.price_info.price_mon.toFixed(2)} MON (+{result.price_info.proxy_buy.fee_percent}% service fee = <span className="text-yellow-300 font-mono">{result.price_info.proxy_buy.total_mon.toFixed(2)} MON</span>)
+                        </>
+                      )}
                     </p>
                   </div>
                 )}

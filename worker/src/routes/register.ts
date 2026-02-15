@@ -5,6 +5,7 @@ import { authMiddleware, createToken } from '../auth';
 import { createToken as createNadFunToken, distributeInitialTokens } from '../nadfun';
 import { transferNadName } from '../nns-transfer';
 import { getNadNamesForWallet } from '../nns-lookup';
+import { getNnsPriceFromFrontend } from '../nns-price-scraper';
 import { executeNnsPurchase } from '../nns-purchase';
 
 const PRICE_ORACLE_V2 = '0xdF0e18bb6d8c5385d285C3c67919E99c0dce020d' as const;
@@ -538,7 +539,7 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
 
   try {
     // Check availability + get price in parallel
-    const [isAvailable, priceResult] = await Promise.all([
+    const [isAvailable, priceResult, frontendPrice] = await Promise.all([
       client.readContract({
         address: NNS_REGISTRAR,
         abi: registrarAbi,
@@ -551,12 +552,20 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
         functionName: 'getRegisteringPriceInToken',
         args: [name, '0x0000000000000000000000000000000000000000'],
       }),
+      // Try to scrape price from nad.domains frontend (includes discounts)
+      getNnsPriceFromFrontend(name),
     ]);
 
     const basePriceWei = priceResult.base;
     const priceMon = parseFloat(formatEther(basePriceWei));
     const CONVENIENCE_FEE = 0.15; // 15%
     const totalWei = (basePriceWei * 115n) / 100n;
+
+    // Use frontend price if available (includes discounts), otherwise use contract price
+    const displayPriceMon = frontendPrice?.price || priceMon;
+    const discountPercent = frontendPrice?.discount || 0;
+    const finalPriceMon = displayPriceMon * (1 - discountPercent / 100);
+    const totalWithFee = Math.ceil(finalPriceMon * (1 + CONVENIENCE_FEE) * 100) / 100;
 
     // Also check if already registered in NadMail
     const nadmailTaken = await c.env.DB.prepare(
@@ -568,11 +577,15 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
       nad_name: `${name}.nad`,
       available_nns: isAvailable,
       available_nadmail: !nadmailTaken,
-      price_mon: priceMon,
+      price_mon: priceMon,              // 原始價格（合約）
+      display_price_mon: displayPriceMon, // 顯示價格（含折扣）
+      discount_percent: discountPercent,  // 折扣百分比
+      final_price_mon: finalPriceMon,    // 最終價格（折扣後）
       price_wei: basePriceWei.toString(),
+      source: frontendPrice ? 'scraped' : 'contract',
       proxy_buy: {
         fee_percent: CONVENIENCE_FEE * 100,
-        total_mon: Math.ceil(priceMon * (1 + CONVENIENCE_FEE) * 100) / 100,
+        total_mon: totalWithFee,
         total_wei: totalWei.toString(),
         available: isAvailable && !nadmailTaken,
         method: 'POST /api/register/buy-nad-name/quote',
