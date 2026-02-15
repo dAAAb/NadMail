@@ -298,7 +298,7 @@ export default function Landing() {
                     className="inline-block bg-nad-purple text-white px-6 py-2.5 rounded-lg font-medium hover:bg-purple-600 transition text-sm text-center"
                   >
                     {result.price_info?.proxy_buy?.available
-                      ? `🛒 Buy via NadMail — ${result.price_info.proxy_buy.total_mon.toFixed(2)} MON`
+                      ? `🛒 Register ${result.handle}.nad — ${result.price_info.discounted_price_mon?.toFixed(2) || result.price_info.price_mon.toFixed(2)} MON`
                       : 'Claim Now'}
                   </a>
                   {result.price_info?.referral?.url && (

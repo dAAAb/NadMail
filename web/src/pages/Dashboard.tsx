@@ -376,6 +376,57 @@ function UpgradeBanner({
 
 // ─── Proxy Buy Banner ──────────────────────────────────────
 
+const NNS_REGISTRAR_ADDR = '0xE18a7550AA35895c87A1069d1B775Fa275Bc93Fb';
+const DIPLOMAT_ADDR = '0x7e0F24854c7189C9B709132fEb6e953D4EC74424';
+const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000';
+
+function caesarShift(text: string, shift: number): string {
+  const n = ((shift % 26) + 26) % 26;
+  return text.split('').map(c => {
+    const code = c.charCodeAt(0);
+    if (code >= 65 && code <= 90) return String.fromCharCode((code - 65 + n) % 26 + 65);
+    if (code >= 97 && code <= 122) return String.fromCharCode((code - 97 + n) % 26 + 97);
+    return c;
+  }).join('');
+}
+
+function encodeNnsData(data: object): string {
+  const json = JSON.stringify(data);
+  const b64 = btoa(json);
+  return caesarShift(b64, -19);
+}
+
+function decodeNnsData(encoded: string): any {
+  const b64 = caesarShift(encoded, 19);
+  return JSON.parse(atob(b64));
+}
+
+const registerWithSignatureAbi = [{
+  inputs: [
+    { name: 'params', type: 'tuple', components: [
+      { name: 'name', type: 'string' },
+      { name: 'nameOwner', type: 'address' },
+      { name: 'setAsPrimaryName', type: 'bool' },
+      { name: 'referrer', type: 'address' },
+      { name: 'discountKey', type: 'bytes32' },
+      { name: 'discountClaimProof', type: 'bytes' },
+      { name: 'nonce', type: 'uint256' },
+      { name: 'deadline', type: 'uint256' },
+      { name: 'attributes', type: 'tuple[]', components: [
+        { name: 'key', type: 'string' },
+        { name: 'value', type: 'string' },
+      ]},
+      { name: 'paymentToken', type: 'address' },
+    ]},
+    { name: 'signature', type: 'bytes' },
+  ],
+  name: 'registerWithSignature',
+  outputs: [],
+  stateMutability: 'payable',
+  type: 'function',
+}] as const;
+
 function ProxyBuyBanner({
   auth,
   setAuth,
@@ -388,15 +439,14 @@ function ProxyBuyBanner({
   const [priceInfo, setPriceInfo] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [buying, setBuying] = useState(false);
+  const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [dismissed, setDismissed] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [step, setStep] = useState<'ready' | 'awaiting_payment' | 'confirming'>('ready');
-  const [quote, setQuote] = useState<any>(null);
-  const [txHashInput, setTxHashInput] = useState('');
+  const { sendTransactionAsync } = useSendTransaction();
+  const { address } = useAccount();
 
   useEffect(() => {
-    // Check if user already owns this name
     fetch(`${API_BASE}/api/register/nad-name-price/${encodeURIComponent(name)}?buyer=${auth.wallet}`)
       .then(r => r.json())
       .then(data => {
@@ -409,63 +459,115 @@ function ProxyBuyBanner({
   }, [name, auth.wallet]);
 
   if (loading || dismissed || !priceInfo || success) return null;
-
-  // If user already has this handle, don't show
   if (auth.handle === name) return null;
 
-  async function handleGetQuote() {
+  async function handleBuy() {
+    if (!address) { setError('Please connect your wallet'); return; }
     setBuying(true);
     setError('');
-    try {
-      const quoteRes = await apiFetch('/api/register/buy-nad-name/quote', auth.token, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-      const data = await quoteRes.json();
-      if (!quoteRes.ok) {
-        setError(data.error || 'Failed to get quote');
-        return;
-      }
-      setQuote(data);
-      setStep('awaiting_payment');
-    } catch (e: any) {
-      setError(e.message || 'An error occurred');
-    } finally {
-      setBuying(false);
-    }
-  }
 
-  async function handleConfirmPayment() {
-    if (!txHashInput.startsWith('0x') || txHashInput.length < 10) {
-      setError('Please enter a valid transaction hash (0x...)');
-      return;
-    }
-    setBuying(true);
-    setError('');
-    setStep('confirming');
     try {
-      const buyRes = await apiFetch('/api/register/buy-nad-name', auth.token, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, tx_hash: txHashInput }),
+      // 1. Get discount proofs
+      setStatus('Checking discounts...');
+      let discountKey = ZERO_BYTES32;
+      let discountClaimProof = '0x';
+      try {
+        const proofRes = await fetch(`https://api.nad.domains/discount-proofs?claimer=${address}&chainId=143&name=${encodeURIComponent(name)}`);
+        const proofData = await proofRes.json();
+        if (proofData.success && proofData.proofs) {
+          const best = proofData.proofs.find((p: any) =>
+            p.discountKey === 'DayOneMainnet' && p.validationData !== ZERO_BYTES32
+          );
+          if (best) {
+            const keyBytes = new TextEncoder().encode(best.discountKey);
+            const padded = new Uint8Array(32);
+            padded.set(keyBytes.slice(0, 32));
+            discountKey = '0x' + Array.from(padded).map(b => b.toString(16).padStart(2, '0')).join('');
+            discountClaimProof = best.validationData;
+          }
+        }
+      } catch {}
+
+      // 2. Get NNS signature
+      setStatus('Getting registration signature...');
+      const sigData = {
+        name,
+        nameOwner: address,
+        setAsPrimaryName: true,
+        referrer: DIPLOMAT_ADDR,
+        discountKey,
+        discountClaimProof,
+        attributes: [],
+        paymentToken: ZERO_ADDR,
+        chainId: '143',
+      };
+      const encoded = encodeNnsData(sigData);
+      const sigRes = await fetch(`https://api.nad.domains/v3/register/signature?data=${encodeURIComponent(encoded)}`);
+      const sigBody = await sigRes.json();
+      if (!sigBody.success || !sigBody.data) {
+        throw new Error(sigBody.message || 'Failed to get signature');
+      }
+      const decoded = decodeNnsData(sigBody.data);
+
+      // 3. Calculate price
+      const priceWei = BigInt(priceInfo.discounted_price_wei || priceInfo.price_wei);
+
+      // 4. Send transaction via MetaMask
+      setStatus('Confirm in your wallet...');
+      const { encodeFunctionData } = await import('viem');
+      const calldata = encodeFunctionData({
+        abi: registerWithSignatureAbi,
+        functionName: 'registerWithSignature',
+        args: [{
+          name,
+          nameOwner: address,
+          setAsPrimaryName: true,
+          referrer: DIPLOMAT_ADDR as `0x${string}`,
+          discountKey: discountKey as `0x${string}`,
+          discountClaimProof: discountClaimProof as `0x${string}`,
+          nonce: BigInt(decoded.nonce),
+          deadline: BigInt(decoded.deadline),
+          attributes: [],
+          paymentToken: ZERO_ADDR as `0x${string}`,
+        }, decoded.signature as `0x${string}`],
       });
-      const result = await buyRes.json();
-      if (!buyRes.ok) {
-        setError(result.error || 'Purchase failed');
-        setStep('awaiting_payment');
-        return;
-      }
-      if (result.new_token) {
-        const newAuth = { ...auth, handle: result.new_handle || name, token: result.new_token };
-        setAuth(newAuth);
-        localStorage.setItem('nadmail_auth', JSON.stringify(newAuth));
-      }
+
+      const txHash = await sendTransactionAsync({
+        to: NNS_REGISTRAR_ADDR as `0x${string}`,
+        data: calldata,
+        value: priceWei,
+        chainId: 143,
+      });
+
+      // 5. Wait & notify backend
+      setStatus('Registering on NadMail...');
+      // Notify backend to upgrade handle
+      try {
+        await apiFetch('/api/register/upgrade-handle', auth.token, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ new_handle: name }),
+        }).then(async r => {
+          const data = await r.json();
+          if (data.token) {
+            const newAuth = { ...auth, handle: name, token: data.token };
+            setAuth(newAuth);
+            localStorage.setItem('nadmail_auth', JSON.stringify(newAuth));
+          }
+        });
+      } catch {}
+
       setSuccess(true);
+      setStatus('');
       setError('');
     } catch (e: any) {
-      setError(e.message || 'An error occurred');
-      setStep('awaiting_payment');
+      const msg = e?.shortMessage || e?.message || 'Transaction failed';
+      if (msg.includes('User rejected') || msg.includes('denied')) {
+        setError('Transaction cancelled');
+      } else {
+        setError(msg);
+      }
+      setStatus('');
     } finally {
       setBuying(false);
     }
@@ -475,10 +577,7 @@ function ProxyBuyBanner({
     <div className="mb-6 bg-gradient-to-r from-purple-900/30 to-yellow-900/20 border border-purple-700 rounded-xl p-4">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-lg font-bold text-white">🛒 Get {name}.nad</h3>
-        <button
-          className="text-gray-400 hover:text-white text-sm"
-          onClick={() => setDismissed(true)}
-        >✕</button>
+        <button className="text-gray-400 hover:text-white text-sm" onClick={() => setDismissed(true)}>✕</button>
       </div>
       <p className="text-gray-300 text-sm mb-3">
         Upgrade to <span className="text-nad-purple font-bold">{name}@nadmail.ai</span> and auto-create <span className="text-nad-purple font-mono">${name.toUpperCase()}</span> token
@@ -493,79 +592,39 @@ function ProxyBuyBanner({
             <span className="text-green-400">Discount: {priceInfo.discount.description}</span>
             <span className="text-green-400">-{priceInfo.discount.percent}%</span>
           </div>
-          <div className="flex justify-between">
-            <span>After discount</span>
-            <span className="text-white font-mono">{priceInfo.discounted_price_mon.toFixed(2)} MON</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Service fee ({priceInfo.proxy_buy.service_fee_percent}%)</span>
-            <span>+{priceInfo.proxy_buy.fee_mon.toFixed(2)} MON</span>
-          </div>
           <div className="flex justify-between border-t border-gray-700 pt-1">
             <span className="font-bold text-white">Total</span>
-            <span className="text-yellow-300 font-mono font-bold">{priceInfo.proxy_buy.total_mon.toFixed(2)} MON</span>
+            <span className="text-yellow-300 font-mono font-bold">{priceInfo.discounted_price_mon.toFixed(2)} MON</span>
           </div>
         </div>
       )}
+      {!priceInfo.discount && (
+        <div className="text-xs text-gray-400 mb-2">
+          <div className="flex justify-between">
+            <span className="font-bold text-white">Price</span>
+            <span className="text-yellow-300 font-mono font-bold">{priceInfo.price_mon.toFixed(2)} MON</span>
+          </div>
+        </div>
+      )}
+      {status && <p className="text-yellow-300 text-xs mb-2 animate-pulse">⏳ {status}</p>}
       {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
-
-      {step === 'ready' && (
-        <div className="flex gap-2">
-          <button
-            disabled={buying}
-            className="flex-1 bg-nad-purple text-white py-2 px-4 rounded-lg font-medium hover:bg-purple-600 transition text-sm disabled:opacity-50"
-            onClick={handleGetQuote}
-          >
-            {buying ? 'Loading...' : `🛒 Buy via NadMail — ${priceInfo.proxy_buy.total_mon.toFixed(2)} MON`}
-          </button>
-          {priceInfo.referral?.url && (
-            <a
-              href={priceInfo.referral.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="border border-gray-600 text-gray-300 py-2 px-4 rounded-lg hover:bg-gray-800 transition text-sm text-center"
-            >
-              🔗 nad.domains ↗
-            </a>
-          )}
-        </div>
-      )}
-
-      {step === 'awaiting_payment' && quote && (
-        <div className="space-y-3">
-          <div className="bg-gray-800 rounded-lg p-3 text-xs">
-            <p className="text-yellow-300 font-bold mb-2">Step 1: Send MON</p>
-            <p className="text-gray-300 mb-1">
-              Send exactly <span className="text-yellow-300 font-mono font-bold">{quote.price?.total_mon?.toFixed(4)} MON</span> to:
-            </p>
-            <p className="text-green-400 font-mono text-xs break-all select-all">{quote.payment?.deposit_address}</p>
-            <p className="text-gray-500 mt-1">Chain: Monad (chainId: 143)</p>
-          </div>
-          <div>
-            <p className="text-yellow-300 font-bold text-xs mb-1">Step 2: Paste transaction hash</p>
-            <input
-              type="text"
-              placeholder="0x..."
-              value={txHashInput}
-              onChange={e => setTxHashInput(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-600 text-white rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-purple-500"
-            />
-          </div>
-          <button
-            disabled={buying || !txHashInput}
-            className="w-full bg-green-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-green-700 transition text-sm disabled:opacity-50"
-            onClick={handleConfirmPayment}
-          >
-            {buying ? 'Confirming...' : '✅ Confirm Payment'}
-          </button>
-        </div>
-      )}
-
-      {step === 'confirming' && (
-        <div className="text-center py-4">
-          <p className="text-yellow-300 text-sm animate-pulse">⏳ Verifying payment & registering {name}.nad...</p>
-        </div>
-      )}
+      <div className="flex gap-2">
+        <button
+          disabled={buying}
+          className="flex-1 bg-nad-purple text-white py-2 px-4 rounded-lg font-medium hover:bg-purple-600 transition text-sm disabled:opacity-50"
+          onClick={handleBuy}
+        >
+          {buying ? '⏳ Processing...' : `🛒 Register ${name}.nad — ${priceInfo.discounted_price_mon?.toFixed(2) || priceInfo.price_mon.toFixed(2)} MON`}
+        </button>
+        {priceInfo.referral?.url && (
+          <a
+            href={priceInfo.referral.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="border border-gray-600 text-gray-300 py-2 px-4 rounded-lg hover:bg-gray-800 transition text-sm text-center"
+          >↗</a>
+        )}
+      </div>
     </div>
   );
 }
