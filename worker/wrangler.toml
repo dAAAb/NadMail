@@ -10,7 +10,7 @@ routes = [
 
 [vars]
 DOMAIN = "nadmail.ai"
-MONAD_RPC_URL = "https://monad-mainnet.drpc.org"
+MONAD_RPC_URL = "https://rpc.monad.xyz"
 NADFUN_API_URL = "https://api.nadapp.net"
 NADFUN_LENS = "0x7e78A8DE94f21804F7a17F4E8BF9EC2c872187ea"
 NADFUN_ROUTER = "0x6F6B8F1a20703309951a5127c45B49b1CD981A22"
