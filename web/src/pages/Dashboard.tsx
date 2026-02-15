@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Fragment } from 'react';
 import { Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAccount, useConnect, useDisconnect, useSignMessage, useSendTransaction, useBalance, useSwitchChain } from 'wagmi';
-import { parseEther, formatUnits } from 'viem';
+import { parseEther, formatUnits, encodeFunctionData } from 'viem';
 
 const API_BASE = import.meta.env.PROD ? 'https://api.nadmail.ai' : '';
 const DEPOSIT_ADDRESS = '0x4BbdB896eCEd7d202AD7933cEB220F7f39d0a9Fe';
@@ -514,7 +514,6 @@ function ProxyBuyBanner({
 
       // 4. Send transaction via MetaMask
       setStatus('Confirm in your wallet...');
-      const { encodeFunctionData } = await import('viem');
       const calldata = encodeFunctionData({
         abi: registerWithSignatureAbi,
         functionName: 'registerWithSignature',
