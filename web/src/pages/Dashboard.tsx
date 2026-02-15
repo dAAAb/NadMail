@@ -467,52 +467,18 @@ function ProxyBuyBanner({
     setError('');
 
     try {
-      // 1. Get discount proofs
-      setStatus('Checking discounts...');
-      let discountKey = ZERO_BYTES32;
-      let discountClaimProof = '0x';
-      try {
-        const proofRes = await fetch(`https://api.nad.domains/discount-proofs?claimer=${address}&chainId=143&name=${encodeURIComponent(name)}`);
-        const proofData = await proofRes.json();
-        if (proofData.success && proofData.proofs) {
-          const best = proofData.proofs.find((p: any) =>
-            p.discountKey === 'DayOneMainnet' && p.validationData !== ZERO_BYTES32
-          );
-          if (best) {
-            const keyBytes = new TextEncoder().encode(best.discountKey);
-            const padded = new Uint8Array(32);
-            padded.set(keyBytes.slice(0, 32));
-            discountKey = '0x' + Array.from(padded).map(b => b.toString(16).padStart(2, '0')).join('');
-            discountClaimProof = best.validationData;
-          }
-        }
-      } catch {}
-
-      // 2. Get NNS signature
-      setStatus('Getting registration signature...');
-      const sigData = {
-        name,
-        nameOwner: address,
-        setAsPrimaryName: true,
-        referrer: DIPLOMAT_ADDR,
-        discountKey,
-        discountClaimProof,
-        attributes: [],
-        paymentToken: ZERO_ADDR,
-        chainId: '143',
-      };
-      const encoded = encodeNnsData(sigData);
-      const sigRes = await fetch(`https://api.nad.domains/v3/register/signature?data=${encodeURIComponent(encoded)}`);
-      const sigBody = await sigRes.json();
-      if (!sigBody.success || !sigBody.data) {
-        throw new Error(sigBody.message || 'Failed to get signature');
+      // 1. Get signature + discount via our proxy API (avoids CORS issues with api.nad.domains)
+      setStatus('Preparing registration...');
+      const signRes = await fetch(`${API_BASE}/api/register/nad-name-sign/${encodeURIComponent(name)}?buyer=${address}`);
+      const signData = await signRes.json();
+      if (!signRes.ok || !signData.signature) {
+        throw new Error(signData.error || 'Failed to prepare registration');
       }
-      const decoded = decodeNnsData(sigBody.data);
 
-      // 3. Calculate price
+      // 2. Calculate price
       const priceWei = BigInt(priceInfo.discounted_price_wei || priceInfo.price_wei);
 
-      // 4. Send transaction via MetaMask
+      // 3. Send transaction via MetaMask
       setStatus('Confirm in your wallet...');
       const calldata = encodeFunctionData({
         abi: registerWithSignatureAbi,
@@ -521,14 +487,14 @@ function ProxyBuyBanner({
           name,
           nameOwner: address,
           setAsPrimaryName: true,
-          referrer: DIPLOMAT_ADDR as `0x${string}`,
-          discountKey: discountKey as `0x${string}`,
-          discountClaimProof: discountClaimProof as `0x${string}`,
-          nonce: BigInt(decoded.nonce),
-          deadline: BigInt(decoded.deadline),
+          referrer: signData.referrer as `0x${string}`,
+          discountKey: signData.discountKey as `0x${string}`,
+          discountClaimProof: signData.discountClaimProof as `0x${string}`,
+          nonce: BigInt(signData.nonce),
+          deadline: BigInt(signData.deadline),
           attributes: [],
           paymentToken: ZERO_ADDR as `0x${string}`,
-        }, decoded.signature as `0x${string}`],
+        }, signData.signature as `0x${string}`],
       });
 
       const txHash = await sendTransactionAsync({

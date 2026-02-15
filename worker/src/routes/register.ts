@@ -1111,3 +1111,102 @@ async function resolveUniqueWalletHandle(wallet: string, db: any): Promise<strin
   }
   return w;
 }
+
+/**
+ * GET /api/register/nad-name-sign/:name
+ * Get NNS registration signature (proxied through our API to avoid CORS).
+ * Query: ?buyer=0x...&referrer=0x...&discountKey=0x...&discountClaimProof=0x...
+ */
+registerRoutes.get('/nad-name-sign/:name', async (c) => {
+  const name = c.req.param('name').toLowerCase().replace(/\.nad$/, '');
+  const buyer = c.req.query('buyer') || '';
+  const referrer = c.req.query('referrer') || (c.env as any).NNS_REFERRER || '0x7e0F24854c7189C9B709132fEb6e953D4EC74424';
+  const discountKey = c.req.query('discountKey') || '0x0000000000000000000000000000000000000000000000000000000000000000';
+  const discountClaimProof = c.req.query('discountClaimProof') || '0x';
+
+  if (!name || !buyer) {
+    return c.json({ error: 'name and buyer are required' }, 400);
+  }
+
+  try {
+    // 1. Get discount proofs from NNS
+    let bestDiscountKey = discountKey;
+    let bestClaimProof = discountClaimProof;
+
+    if (bestDiscountKey === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+      try {
+        const proofRes = await fetch(
+          `https://api.nad.domains/discount-proofs?claimer=${buyer}&chainId=143&name=${encodeURIComponent(name)}`
+        );
+        const proofData = await proofRes.json() as any;
+        if (proofData.success && proofData.proofs) {
+          const best = proofData.proofs.find((p: any) =>
+            p.discountKey === 'DayOneMainnet' &&
+            p.validationData !== '0x0000000000000000000000000000000000000000000000000000000000000000'
+          );
+          if (best) {
+            const keyBytes = new TextEncoder().encode(best.discountKey);
+            const padded = new Uint8Array(32);
+            padded.set(keyBytes.slice(0, 32));
+            bestDiscountKey = '0x' + Array.from(padded).map(b => b.toString(16).padStart(2, '0')).join('');
+            bestClaimProof = best.validationData;
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Get signature from NNS
+    const sigData = {
+      name,
+      nameOwner: buyer,
+      setAsPrimaryName: true,
+      referrer,
+      discountKey: bestDiscountKey,
+      discountClaimProof: bestClaimProof,
+      attributes: [],
+      paymentToken: '0x0000000000000000000000000000000000000000',
+      chainId: '143',
+    };
+
+    // Caesar cipher encode
+    function caesarShift(text: string, shift: number): string {
+      const n = ((shift % 26) + 26) % 26;
+      return text.split('').map(ch => {
+        const code = ch.charCodeAt(0);
+        if (code >= 65 && code <= 90) return String.fromCharCode((code - 65 + n) % 26 + 65);
+        if (code >= 97 && code <= 122) return String.fromCharCode((code - 97 + n) % 26 + 97);
+        return ch;
+      }).join('');
+    }
+
+    const encoded = caesarShift(btoa(JSON.stringify(sigData)), 7); // shift -19 = shift 7
+
+    const sigRes = await fetch(
+      `https://api.nad.domains/v3/register/signature?data=${encodeURIComponent(encoded)}`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+    const sigBody = await sigRes.json() as any;
+
+    if (!sigBody.success || !sigBody.data) {
+      return c.json({ error: sigBody.message || 'Failed to get NNS signature' }, 502);
+    }
+
+    // Decode response
+    const decodedB64 = caesarShift(sigBody.data, 19);
+    const decoded = JSON.parse(atob(decodedB64));
+
+    return c.json({
+      name,
+      buyer,
+      referrer,
+      discountKey: bestDiscountKey,
+      discountClaimProof: bestClaimProof,
+      nonce: decoded.nonce,
+      deadline: decoded.deadline,
+      signature: decoded.signature,
+      registrar: '0xE18a7550AA35895c87A1069d1B775Fa275Bc93Fb',
+    });
+  } catch (e: any) {
+    return c.json({ error: `NNS API error: ${e.message}` }, 502);
+  }
+});
