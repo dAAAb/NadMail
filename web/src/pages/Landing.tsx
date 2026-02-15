@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-const API_BASE = import.meta.env.PROD ? 'https://api.nadmail.ai' : '';
+const API_BASE = 'https://api.nadmail.ai';
 
 /* --- FAQ Accordion Item --- */
 function FAQItem({ q, a }: { q: string; a: string }) {
