@@ -266,22 +266,14 @@ export default function Landing() {
                           <span className="text-green-400 font-mono">-{result.price_info.discount.percent}%</span>
                         </div>
                       )}
-                      {/* Discounted price */}
-                      {result.price_info.discount && (
-                        <div className="flex justify-between">
-                          <span>After discount</span>
-                          <span className="text-white font-mono">{result.price_info.discounted_price_mon.toFixed(2)} MON</span>
-                        </div>
-                      )}
-                      {/* Service fee */}
-                      <div className="flex justify-between">
-                        <span>Service fee ({result.price_info.proxy_buy.service_fee_percent}%)</span>
-                        <span className="font-mono">+{result.price_info.proxy_buy.fee_mon.toFixed(2)} MON</span>
-                      </div>
-                      {/* Total */}
+                      {/* Final price */}
                       <div className="flex justify-between border-t border-gray-700 pt-1 mt-1">
                         <span className="font-bold text-white">Total</span>
-                        <span className="text-yellow-300 font-mono font-bold">{result.price_info.proxy_buy.total_mon.toFixed(2)} MON</span>
+                        <span className="text-yellow-300 font-mono font-bold">
+                          {result.price_info.discount
+                            ? result.price_info.discounted_price_mon.toFixed(2)
+                            : result.price_info.price_mon.toFixed(2)} MON
+                        </span>
                       </div>
                     </div>
                   </div>
