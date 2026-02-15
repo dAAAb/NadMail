@@ -244,6 +244,7 @@ export default function Landing() {
                 </div>
                 <p className="text-gray-400 text-sm mb-4">
                   Claim this handle to auto-create <span className="text-nad-purple font-mono">${result.handle?.toUpperCase()}</span> token on nad.fun
+                  <span className="text-gray-500"> | auto-grant 50% initial $</span><span className="text-nad-purple font-mono">{result.handle?.toUpperCase()}</span>
                 </p>
                 {result.price_info && result.price_info.proxy_buy?.available && (
                   <div className="bg-yellow-900/20 border border-yellow-800 rounded-lg p-3 mb-4">
