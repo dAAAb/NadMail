@@ -306,18 +306,17 @@ adminRoutes.post('/downgrade-handles', adminAuth(), async (c) => {
     const now = Math.floor(Date.now() / 1000);
     const newTokenSymbol = account.token_address ? newHandle.slice(0, 10).toUpperCase() : account.token_symbol;
 
-    // Use batch to update all tables atomically
-    // Order: child tables first, then parent (accounts) — FK safe
+    // Disable FK checks, update all tables, re-enable FK checks
     await c.env.DB.batch([
-      // Child tables first
+      c.env.DB.prepare('PRAGMA foreign_keys = OFF'),
+      c.env.DB.prepare(
+        'UPDATE accounts SET handle = ?, nad_name = NULL, previous_handle = ?, token_symbol = CASE WHEN token_address IS NOT NULL THEN ? ELSE token_symbol END WHERE wallet = ?'
+      ).bind(newHandle, h, newTokenSymbol, wallet),
       c.env.DB.prepare('UPDATE emails SET handle = ? WHERE handle = ?').bind(newHandle, h),
       c.env.DB.prepare('UPDATE daily_email_counts SET handle = ? WHERE handle = ?').bind(newHandle, h),
       c.env.DB.prepare('UPDATE credit_transactions SET handle = ? WHERE handle = ?').bind(newHandle, h),
       c.env.DB.prepare('UPDATE daily_emobuy_totals SET handle = ? WHERE handle = ?').bind(newHandle, h),
-      // Parent table last
-      c.env.DB.prepare(
-        'UPDATE accounts SET handle = ?, nad_name = NULL, previous_handle = ?, token_symbol = CASE WHEN token_address IS NOT NULL THEN ? ELSE token_symbol END WHERE wallet = ?'
-      ).bind(newHandle, h, newTokenSymbol, wallet),
+      c.env.DB.prepare('PRAGMA foreign_keys = ON'),
     ]);
 
     let newTokenAddress = account.token_address;
