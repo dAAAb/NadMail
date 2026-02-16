@@ -24,3 +24,22 @@ statsRoutes.get('/', async (c) => {
     received: inboxRow?.count || 0,
   });
 });
+
+/**
+ * GET /api/stats/tokens
+ * Public — returns all NadMail accounts that have a meme coin.
+ * Used by the dashboard sidebar to show token holdings.
+ */
+statsRoutes.get('/tokens', async (c) => {
+  const rows = await c.env.DB.prepare(
+    'SELECT handle, token_address, token_symbol FROM accounts WHERE token_address IS NOT NULL ORDER BY created_at'
+  ).all<{ handle: string; token_address: string; token_symbol: string }>();
+
+  return c.json({
+    tokens: (rows.results || []).map(r => ({
+      handle: r.handle,
+      address: r.token_address,
+      symbol: r.token_symbol,
+    })),
+  });
+});

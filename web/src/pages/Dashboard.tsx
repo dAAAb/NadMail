@@ -726,31 +726,72 @@ export default function Dashboard() {
     return () => { cancelled = true; };
   }, [auth?.handle, auth?.token_symbol]);
 
-  // Fetch token holdings (own token + top holdings)
+  // Fetch token holdings — query all NadMail tokens, then check balances
   useEffect(() => {
-    if (!auth?.wallet || !auth?.token) return;
+    if (!auth?.wallet) return;
+    let cancelled = false;
     (async () => {
       try {
-        const res = await apiFetch('/api/credits', auth.token);
-        const data = await res.json();
-        // Get token holdings from the identity/portfolio endpoint if available
-        const holdingsRes = await fetch(`${API_BASE}/api/identity/${auth.handle}`);
-        if (holdingsRes.ok) {
-          const identity = await holdingsRes.json();
-          const holdings: { symbol: string; address: string; balance: string; isOwn: boolean }[] = [];
-          if (identity.token_address && identity.token_symbol) {
-            holdings.push({
-              symbol: identity.token_symbol,
-              address: identity.token_address,
-              balance: '—',
-              isOwn: true,
+        // Get all NadMail tokens
+        const tokensRes = await fetch(`${API_BASE}/api/stats/tokens`);
+        if (!tokensRes.ok) return;
+        const { tokens } = await tokensRes.json();
+        if (cancelled || !tokens?.length) return;
+
+        // Query balances via RPC multicall (batch of balanceOf calls)
+        const client = createPublicClient({
+          chain: { id: 143, name: 'Monad', nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 }, rpcUrls: { default: { http: ['https://rpc.monad.xyz'] } } },
+          transport: http('https://rpc.monad.xyz'),
+        });
+
+        const balanceCalls = tokens.map((t: any) => ({
+          address: t.address as `0x${string}`,
+          abi: ERC20_BALANCE_ABI,
+          functionName: 'balanceOf' as const,
+          args: [auth.wallet as `0x${string}`],
+        }));
+
+        // Batch in chunks of 20 to avoid RPC limits
+        const holdings: { symbol: string; address: string; balance: string; isOwn: boolean; rawBalance: bigint }[] = [];
+        for (let i = 0; i < balanceCalls.length; i += 20) {
+          if (cancelled) return;
+          const chunk = balanceCalls.slice(i, i + 20);
+          try {
+            const results = await client.multicall({ contracts: chunk });
+            results.forEach((r: any, j: number) => {
+              const token = tokens[i + j];
+              if (r.status === 'success' && r.result > 0n) {
+                const bal = r.result as bigint;
+                const formatted = parseFloat(formatUnits(bal, 18));
+                let balStr: string;
+                if (formatted >= 1_000_000) balStr = `${(formatted / 1_000_000).toFixed(1)}M`;
+                else if (formatted >= 1_000) balStr = `${(formatted / 1_000).toFixed(1)}K`;
+                else balStr = formatted.toFixed(2);
+
+                holdings.push({
+                  symbol: token.symbol,
+                  address: token.address,
+                  balance: balStr,
+                  isOwn: token.address === auth.token_address,
+                  rawBalance: bal,
+                });
+              }
             });
-          }
-          setTokenHoldings(holdings);
+          } catch {}
         }
+
+        if (cancelled) return;
+        // Sort: own token first, then by balance descending
+        holdings.sort((a, b) => {
+          if (a.isOwn) return -1;
+          if (b.isOwn) return 1;
+          return b.rawBalance > a.rawBalance ? 1 : -1;
+        });
+        setTokenHoldings(holdings.map(({ rawBalance, ...h }) => h));
       } catch {}
     })();
-  }, [auth?.wallet, auth?.token, auth?.token_symbol]);
+    return () => { cancelled = true; };
+  }, [auth?.wallet, auth?.token_address]);
 
   if (!auth) {
     return <ConnectWallet onAuth={setAuth} />;
@@ -791,7 +832,7 @@ export default function Dashboard() {
           <CopyButton text={primaryEmail} label="Copy address" />
           {auth.token_symbol && (
             <a
-              href={`https://nad.fun/token/${auth.token_address}`}
+              href={`https://nad.fun/tokens/${auth.token_address}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-purple-400 text-xs mt-1 font-mono hover:text-purple-300 transition block"
@@ -820,28 +861,13 @@ export default function Dashboard() {
               <span className="text-gray-500">MON</span>
               <span className="text-gray-300 font-mono">{monBalance ? parseFloat(formatUnits(monBalance.value, 18)).toFixed(4) : '—'}</span>
             </div>
-            {auth.token_symbol && auth.token_address && (
-              <div className="flex items-center justify-between text-xs">
-                <a
-                  href={`https://nad.fun/token/${auth.token_address}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-nad-purple hover:text-purple-300 transition font-mono"
-                >
-                  ${auth.token_symbol}
-                </a>
-                <span className="text-gray-300 font-mono">
-                  <TokenBalance address={auth.token_address} wallet={auth.wallet} />
-                </span>
-              </div>
-            )}
-            {tokenHoldings.filter(t => !t.isOwn).slice(0, 3).map(t => (
+            {tokenHoldings.slice(0, 4).map(t => (
               <div key={t.address} className="flex items-center justify-between text-xs">
                 <a
-                  href={`https://nad.fun/token/${t.address}`}
+                  href={`https://nad.fun/tokens/${t.address}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-purple-400 hover:text-purple-300 transition font-mono"
+                  className={`${t.isOwn ? 'text-nad-purple' : 'text-purple-400'} hover:text-purple-300 transition font-mono`}
                 >
                   ${t.symbol}
                 </a>
@@ -853,7 +879,7 @@ export default function Dashboard() {
                 onClick={() => setShowAllTokens(true)}
                 className="text-[10px] text-gray-500 hover:text-gray-300 transition mt-1"
               >
-                View all tokens →
+                View all {tokenHoldings.length} tokens →
               </button>
             )}
           </div>
@@ -902,27 +928,16 @@ export default function Dashboard() {
               <button onClick={() => setShowAllTokens(false)} className="text-gray-500 hover:text-white text-xl">&times;</button>
             </div>
             <div className="space-y-2">
-              {auth.token_symbol && auth.token_address && (
-                <div className="flex items-center justify-between py-2 border-b border-gray-800">
-                  <a href={`https://nad.fun/token/${auth.token_address}`} target="_blank" rel="noopener noreferrer"
-                    className="text-nad-purple font-mono text-sm hover:text-purple-300 transition">
-                    ${auth.token_symbol} <span className="text-gray-600 text-xs">(yours)</span>
-                  </a>
-                  <span className="text-gray-300 font-mono text-sm">
-                    <TokenBalance address={auth.token_address} wallet={auth.wallet} />
-                  </span>
-                </div>
-              )}
-              {tokenHoldings.filter(t => !t.isOwn).map(t => (
+              {tokenHoldings.map(t => (
                 <div key={t.address} className="flex items-center justify-between py-2 border-b border-gray-800 last:border-0">
-                  <a href={`https://nad.fun/token/${t.address}`} target="_blank" rel="noopener noreferrer"
-                    className="text-purple-400 font-mono text-sm hover:text-purple-300 transition">
-                    ${t.symbol}
+                  <a href={`https://nad.fun/tokens/${t.address}`} target="_blank" rel="noopener noreferrer"
+                    className={`${t.isOwn ? 'text-nad-purple' : 'text-purple-400'} font-mono text-sm hover:text-purple-300 transition`}>
+                    ${t.symbol} {t.isOwn && <span className="text-gray-600 text-xs">(yours)</span>}
                   </a>
                   <span className="text-gray-300 font-mono text-sm">{t.balance}</span>
                 </div>
               ))}
-              {tokenHoldings.length === 0 && !auth.token_symbol && (
+              {tokenHoldings.length === 0 && (
                 <p className="text-gray-500 text-center py-4">No tokens yet</p>
               )}
             </div>
@@ -2364,7 +2379,7 @@ function Settings({ auth, setAuth }: { auth: AuthState; setAuth: (a: AuthState) 
               <div className="flex items-center justify-between">
                 <span className="text-gray-400">Token</span>
                 <a
-                  href={`https://nad.fun/token/${auth.token_address}`}
+                  href={`https://nad.fun/tokens/${auth.token_address}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="font-mono text-nad-purple text-xs font-bold hover:text-purple-300 transition"
