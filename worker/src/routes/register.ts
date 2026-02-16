@@ -664,10 +664,11 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
     const discountPercent = bestDiscount?.percent || 0;
     const discountedPriceWei = basePriceWei - (basePriceWei * BigInt(discountPercent)) / 100n;
     const discountedPriceMon = parseFloat(formatEther(discountedPriceWei));
-    const feeWei = (discountedPriceWei * BigInt(SERVICE_FEE_PERCENT)) / 100n;
-    const totalWei = discountedPriceWei + feeWei;
-    const feeMon = parseFloat(formatEther(feeWei));
-    const totalMon = parseFloat(formatEther(totalWei));
+    // No extra fee for proxy buy — revenue via NNS referral commission
+    const feeWei = 0n;
+    const totalWei = discountedPriceWei;
+    const feeMon = 0;
+    const totalMon = discountedPriceMon;
 
     // Also check if already registered in NadMail
     const nadmailTaken = await c.env.DB.prepare(
@@ -701,9 +702,9 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
 
       // Proxy-buy
       proxy_buy: {
-        service_fee_percent: SERVICE_FEE_PERCENT,
-        fee_mon: Math.ceil(feeMon * 100) / 100,
-        total_mon: Math.ceil(totalMon * 100) / 100,
+        service_fee_percent: 0,
+        fee_mon: 0,
+        total_mon: discountedPriceMon,
         total_wei: totalWei.toString(),
         available: isAvailable && !nadmailTaken,
         deposit_address: c.env.WALLET_ADDRESS,
@@ -826,13 +827,11 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
     return c.json({ error: `${name}.nad is not available on NNS` }, 409);
   }
 
-  // Proxy buy: NO discount applied.
-  // NNS discount verifiers check msg.sender, which is our Worker wallet (not the buyer).
-  // Worker pays full NNS price. The 15% service fee is on top of full price.
-  // Note: nad-name-price endpoint still shows discounts for the Dashboard
-  // (where users pay directly via MetaMask and get the discount themselves).
-  const feeWei = (basePriceWei * 15n) / 100n;
-  const totalWei = basePriceWei + feeWei;
+  // Proxy buy: user pays full NNS price, no extra service fee.
+  // Revenue comes from NNS referral commission (10% to diplomat.nad) — same as Dashboard.
+  // This keeps pricing fair: API users pay the same as Dashboard users.
+  const feeWei = 0n;
+  const totalWei = basePriceWei;
 
   // Create pending order
   const now = Math.floor(Date.now() / 1000);
@@ -854,12 +853,12 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
     price: {
       base_mon: priceMon,
       base_wei: basePriceWei.toString(),
-      fee_percent: CONVENIENCE_FEE_RATE * 100,
-      fee_mon: feeMon,
-      fee_wei: feeWei.toString(),
-      total_mon: totalMon,
-      total_wei: totalWei.toString(),
-      note: 'Proxy purchase uses full NNS price (discounts only available via Dashboard with MetaMask).',
+      fee_percent: 0,
+      fee_mon: 0,
+      fee_wei: '0',
+      total_mon: priceMon,
+      total_wei: basePriceWei.toString(),
+      note: 'No extra fee — NadMail earns via NNS referral commission. Discounts only available via Dashboard with MetaMask.',
     },
     payment: {
       deposit_address: c.env.WALLET_ADDRESS,
@@ -967,8 +966,8 @@ registerRoutes.post('/buy-nad-name', authMiddleware(), async (c) => {
       return c.json({ error: `Failed to query NNS: ${e.message}` }, 500);
     }
 
-    feeWei = (priceWei * 15n) / 100n;
-    totalWeiRequired = priceWei + feeWei;
+    feeWei = 0n; // No extra fee — revenue via NNS referral
+    totalWeiRequired = priceWei;
     orderId = `pp-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
 
     await c.env.DB.prepare(
