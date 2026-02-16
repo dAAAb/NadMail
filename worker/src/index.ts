@@ -57,8 +57,46 @@ app.get('/api/docs', (c) => {
       economics: 'NadMail Worker pays all gas + token creation. You get 10 free internal emails/day.',
     },
 
+    buy_nad_name: {
+      overview: 'Want a memorable email like alice@nadmail.ai? Buy a .nad name first, then register.',
+      steps: [
+        {
+          step: 1,
+          action: 'Check price + availability',
+          method: 'GET',
+          url: `${BASE}/api/register/nad-name-price/YOUR_NAME`,
+          curl: `curl ${BASE}/api/register/nad-name-price/alice`,
+          response_example: { name: 'alice', available_nns: true, available_nadmail: true, price_mon: 512, discounted_price_mon: 256 },
+        },
+        {
+          step: 2,
+          action: 'Get registration signature + calldata',
+          method: 'GET',
+          url: `${BASE}/api/register/nad-name-sign/YOUR_NAME?buyer=YOUR_WALLET`,
+          curl: `curl "${BASE}/api/register/nad-name-sign/alice?buyer=0xYOUR_WALLET"`,
+          response_example: { calldata: '0x623f1166...', value: '256000000000000000000', value_mon: 256, registrar: '0xE18a...', chain_id: 143 },
+          next: 'Send a transaction with this calldata + value to the registrar address on Monad (chainId: 143)',
+        },
+        {
+          step: 3,
+          action: 'Send on-chain transaction (your wallet pays directly)',
+          code: 'await wallet.sendTransaction({ to: registrar, data: calldata, value: BigInt(value), chainId: 143 })',
+          note: 'You now own alice.nad! The NFT is in your wallet.',
+        },
+        {
+          step: 4,
+          action: 'Register on NadMail with your .nad name',
+          method: 'POST',
+          url: `${BASE}/api/auth/agent-register`,
+          body: { address: 'YOUR_WALLET', signature: '0x...', message: '...', handle: 'alice' },
+          response_example: { email: 'alice@nadmail.ai', token_symbol: 'ALICE', token_address: '0x...' },
+          note: 'Your meme coin $ALICE is auto-created on nad.fun!',
+        },
+      ],
+    },
+
     quick_start: {
-      overview: '2 API calls to get your email + meme coin, 1 more to send.',
+      overview: '2 API calls to get your email + meme coin, 1 more to send. (No .nad name needed — uses wallet address as handle.)',
       steps: [
         {
           step: 1,

@@ -1249,6 +1249,108 @@ registerRoutes.get('/nad-name-sign/:name', async (c) => {
     const decodedB64 = caesarShift(sigBody.data, 19);
     const decoded = JSON.parse(atob(decodedB64));
 
+    // 3. Query price from PriceOracle
+    const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
+    const priceClient = createPublicClient({ chain: monad, transport: http(rpcUrl) });
+
+    let priceMon = 0;
+    let priceWei = '0';
+    let discountApplied = false;
+    let discountPercent = 0;
+
+    try {
+      const priceResult = await priceClient.readContract({
+        address: PRICE_ORACLE_V2,
+        abi: priceOracleAbi,
+        functionName: 'getRegisteringPriceInToken',
+        args: [name, '0x0000000000000000000000000000000000000000'],
+      }) as any;
+
+      const basePriceWei = priceResult.base as bigint;
+
+      // Check if discount is being used
+      if (bestDiscountKey !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
+        // Query active discounts to find the percent
+        try {
+          const discounts = await priceClient.readContract({
+            address: NNS_REGISTRAR,
+            abi: registrarAbi,
+            functionName: 'getActiveDiscounts',
+            args: [],
+          }) as any[];
+          for (const d of discounts) {
+            if (d.active && d.key === bestDiscountKey) {
+              discountPercent = Number(d.discountPercent);
+              break;
+            }
+            // Also match by decoded key name
+            const keyHex = (d.key as string).replace(/0+$/, '');
+            const keyStr = Buffer.from(keyHex.replace('0x', ''), 'hex').toString('utf-8').replace(/\0/g, '');
+            if (keyStr === 'DayOneMainnet' && bestDiscountKey.includes('4461794f6e654d61696e6e6574')) {
+              discountPercent = Number(d.discountPercent);
+              break;
+            }
+          }
+        } catch {}
+      }
+
+      const finalPriceWei = discountPercent > 0
+        ? basePriceWei - (basePriceWei * BigInt(discountPercent)) / 100n
+        : basePriceWei;
+
+      priceMon = parseFloat(formatEther(finalPriceWei));
+      priceWei = finalPriceWei.toString();
+      discountApplied = discountPercent > 0;
+    } catch (e: any) {
+      console.log(`[nad-name-sign] Price query failed: ${e.message}`);
+    }
+
+    // 4. Encode calldata for registerWithSignature
+    const { encodeFunctionData } = await import('viem');
+
+    const calldata = encodeFunctionData({
+      abi: [{
+        inputs: [
+          {
+            name: 'params', type: 'tuple',
+            components: [
+              { name: 'name', type: 'string' },
+              { name: 'nameOwner', type: 'address' },
+              { name: 'setAsPrimaryName', type: 'bool' },
+              { name: 'referrer', type: 'address' },
+              { name: 'discountKey', type: 'bytes32' },
+              { name: 'discountClaimProof', type: 'bytes' },
+              { name: 'nonce', type: 'uint256' },
+              { name: 'deadline', type: 'uint256' },
+              { name: 'attributes', type: 'tuple[]', components: [{ name: 'key', type: 'string' }, { name: 'value', type: 'string' }] },
+              { name: 'paymentToken', type: 'address' },
+            ],
+          },
+          { name: 'signature', type: 'bytes' },
+        ],
+        name: 'registerWithSignature',
+        outputs: [],
+        stateMutability: 'payable',
+        type: 'function',
+      }],
+      functionName: 'registerWithSignature',
+      args: [
+        {
+          name,
+          nameOwner: buyer as `0x${string}`,
+          setAsPrimaryName: true,
+          referrer: referrer as `0x${string}`,
+          discountKey: bestDiscountKey as `0x${string}`,
+          discountClaimProof: bestClaimProof as `0x${string}`,
+          nonce: BigInt(decoded.nonce),
+          deadline: BigInt(decoded.deadline),
+          attributes: [],
+          paymentToken: '0x0000000000000000000000000000000000000000' as `0x${string}`,
+        },
+        decoded.signature as `0x${string}`,
+      ],
+    });
+
     return c.json({
       name,
       buyer,
@@ -1258,7 +1360,20 @@ registerRoutes.get('/nad-name-sign/:name', async (c) => {
       nonce: decoded.nonce,
       deadline: decoded.deadline,
       signature: decoded.signature,
-      registrar: '0xE18a7550AA35895c87A1069d1B775Fa275Bc93Fb',
+
+      // Direct Buy fields — Agent 可以直接用
+      calldata,
+      value: priceWei,
+      value_mon: priceMon,
+      discount: discountApplied ? { percent: discountPercent, applied: true } : null,
+      registrar: '0xE18a7550AA35895c87A1069d1B775Fa275Bc93Fb' as const,
+      chain_id: 143,
+
+      guide: {
+        step1: `Send transaction: { to: "0xE18a7550AA35895c87A1069d1B775Fa275Bc93Fb", data: calldata, value: "${priceWei}", chainId: 143 }`,
+        step2: 'Wait for transaction confirmation',
+        step3: `Call POST /api/auth/agent-register with { handle: "${name}" } to get your ${name}@nadmail.ai email + $${name.toUpperCase()} meme coin`,
+      },
     });
   } catch (e: any) {
     return c.json({ error: `NNS API error: ${e.message}` }, 502);
