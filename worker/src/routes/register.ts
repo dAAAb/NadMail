@@ -820,9 +820,36 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
     return c.json({ error: `${name}.nad is not available on NNS` }, 409);
   }
 
-  // Calculate price with 15% convenience fee (bigint math)
-  const feeWei = (basePriceWei * 15n) / 100n;
-  const totalWei = basePriceWei + feeWei;
+  // Check for active discounts (same logic as nad-name-price endpoint)
+  let discountPercent = 0;
+  let discountDescription: string | null = null;
+  try {
+    const activeDiscounts = await client.readContract({
+      address: NNS_REGISTRAR,
+      abi: registrarAbi,
+      functionName: 'getActiveDiscounts',
+      args: [],
+    }) as any[];
+
+    // Find best discount (prefer DayOneMainnet / Xmas Gift)
+    for (const d of activeDiscounts) {
+      if (d.active && Number(d.discountPercent) > discountPercent) {
+        discountPercent = Number(d.discountPercent);
+        discountDescription = d.description;
+      }
+    }
+  } catch (e: any) {
+    console.log(`[buy-nad-name/quote] Discount lookup failed: ${e.message}`);
+  }
+
+  // Apply discount to base price
+  const discountedPriceWei = discountPercent > 0
+    ? basePriceWei - (basePriceWei * BigInt(discountPercent)) / 100n
+    : basePriceWei;
+
+  // Calculate 15% convenience fee on discounted price
+  const feeWei = (discountedPriceWei * 15n) / 100n;
+  const totalWei = discountedPriceWei + feeWei;
 
   // Create pending order
   const now = Math.floor(Date.now() / 1000);
@@ -831,9 +858,10 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
   await c.env.DB.prepare(
     `INSERT INTO proxy_purchases (id, wallet, name, status, price_wei, fee_wei, total_wei, created_at)
      VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`
-  ).bind(orderId, auth.wallet, name, basePriceWei.toString(), feeWei.toString(), totalWei.toString(), now).run();
+  ).bind(orderId, auth.wallet, name, discountedPriceWei.toString(), feeWei.toString(), totalWei.toString(), now).run();
 
-  const priceMon = parseFloat(formatEther(basePriceWei));
+  const baseMon = parseFloat(formatEther(basePriceWei));
+  const priceMon = parseFloat(formatEther(discountedPriceWei));
   const feeMon = parseFloat(formatEther(feeWei));
   const totalMon = parseFloat(formatEther(totalWei));
 
@@ -842,8 +870,11 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
     name,
     nad_name: `${name}.nad`,
     price: {
-      base_mon: priceMon,
+      base_mon: baseMon,
       base_wei: basePriceWei.toString(),
+      discount: discountDescription ? { description: discountDescription, percent: discountPercent } : null,
+      discounted_mon: priceMon,
+      discounted_wei: discountedPriceWei.toString(),
       fee_percent: CONVENIENCE_FEE_RATE * 100,
       fee_mon: feeMon,
       fee_wei: feeWei.toString(),
@@ -943,6 +974,25 @@ registerRoutes.post('/buy-nad-name', authMiddleware(), async (c) => {
         return c.json({ error: `${name}.nad is no longer available` }, 409);
       }
       priceWei = priceResult.base;
+
+      // Apply discounts (same as quote endpoint)
+      try {
+        const activeDiscounts = await queryClient.readContract({
+          address: NNS_REGISTRAR,
+          abi: registrarAbi,
+          functionName: 'getActiveDiscounts',
+          args: [],
+        }) as any[];
+        let bestDiscount = 0;
+        for (const d of activeDiscounts) {
+          if (d.active && Number(d.discountPercent) > bestDiscount) {
+            bestDiscount = Number(d.discountPercent);
+          }
+        }
+        if (bestDiscount > 0) {
+          priceWei = priceWei - (priceWei * BigInt(bestDiscount)) / 100n;
+        }
+      } catch {}
     } catch (e: any) {
       return c.json({ error: `Failed to query NNS: ${e.message}` }, 500);
     }
