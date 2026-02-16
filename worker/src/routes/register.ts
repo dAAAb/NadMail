@@ -748,9 +748,19 @@ const QUOTE_EXPIRY_SECONDS = 600;  // 10 minutes
  * Body: { name: "alice" }
  */
 registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
+  try {
   const auth = c.get('auth');
   const body = await c.req.json<{ name: string }>().catch(() => ({ name: '' }));
   const name = body.name?.toLowerCase().trim().replace(/\.nad$/, '');
+
+  // Ensure proxy_purchases table exists
+  await c.env.DB.exec(`CREATE TABLE IF NOT EXISTS proxy_purchases (
+    id TEXT PRIMARY KEY, wallet TEXT NOT NULL, name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', price_wei TEXT NOT NULL,
+    fee_wei TEXT NOT NULL, total_wei TEXT NOT NULL, payment_tx TEXT,
+    purchase_tx TEXT, error_message TEXT, auto_upgrade INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()), paid_at INTEGER, completed_at INTEGER
+  )`);
 
   if (!name || name.length < 3 || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) {
     return c.json({ error: 'Invalid .nad name (3+ chars, alphanumeric + hyphens)' }, 400);
@@ -851,6 +861,10 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
     expires_at: now + QUOTE_EXPIRY_SECONDS,
     expires_in_seconds: QUOTE_EXPIRY_SECONDS,
   });
+  } catch (e: any) {
+    console.log(`[buy-nad-name/quote] Error: ${e.message}`);
+    return c.json({ error: `Quote failed: ${e.message}` }, 500);
+  }
 });
 
 /**
