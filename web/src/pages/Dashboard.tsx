@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Fragment } from 'react';
 import { Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAccount, useConnect, useDisconnect, useSignMessage, useSendTransaction, useBalance, useSwitchChain } from 'wagmi';
-import { parseEther, formatUnits, encodeFunctionData } from 'viem';
+import { parseEther, formatUnits, encodeFunctionData, createPublicClient, http } from 'viem';
 
 const API_BASE = import.meta.env.PROD ? 'https://api.nadmail.ai' : '';
 const DEPOSIT_ADDRESS = '0x4BbdB896eCEd7d202AD7933cEB220F7f39d0a9Fe';
@@ -458,8 +458,26 @@ function ProxyBuyBanner({
       .finally(() => setLoading(false));
   }, [name, auth.wallet]);
 
-  if (loading || dismissed || !priceInfo || success) return null;
-  if (auth.handle === name) return null;
+  if (loading || dismissed || !priceInfo) return null;
+  if (auth.handle === name && !success) return null;
+
+  if (success) {
+    return (
+      <div className="mb-6 bg-gradient-to-r from-green-900/30 to-purple-900/20 border border-green-700 rounded-xl p-4 text-center">
+        <p className="text-2xl mb-2">🎉</p>
+        <p className="text-green-400 font-bold text-lg">{name}.nad registered!</p>
+        <p className="text-gray-300 text-sm">{status || `${name}@nadmail.ai is being set up...`}</p>
+        {auth.handle !== name && (
+          <button
+            className="mt-3 bg-nad-purple text-white py-2 px-6 rounded-lg font-medium hover:bg-purple-600 transition text-sm"
+            onClick={() => window.location.reload()}
+          >
+            🔄 Refresh to activate
+          </button>
+        )}
+      </div>
+    );
+  }
 
   async function handleBuy() {
     if (!address) { setError('Please connect your wallet'); return; }
@@ -504,26 +522,48 @@ function ProxyBuyBanner({
         chainId: 143,
       });
 
-      // 5. Wait & notify backend
-      setStatus('Registering on NadMail...');
-      // Notify backend to upgrade handle
-      try {
-        await apiFetch('/api/register/upgrade-handle', auth.token, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ new_handle: name }),
-        }).then(async r => {
+      // 5. Wait for transaction confirmation
+      setStatus('Waiting for confirmation...');
+      const monadClient = createPublicClient({
+        chain: { id: 143, name: 'Monad', nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 }, rpcUrls: { default: { http: ['https://rpc.monad.xyz'] } } },
+        transport: http('https://rpc.monad.xyz'),
+      });
+
+      const receipt = await monadClient.waitForTransactionReceipt({ hash: txHash, timeout: 60_000 });
+      if (receipt.status !== 'success') {
+        throw new Error('Transaction failed on-chain');
+      }
+
+      // 6. Upgrade handle on NadMail
+      setStatus('Setting up your email...');
+      let upgraded = false;
+      // Retry a few times (chain state might need a moment to propagate)
+      for (let i = 0; i < 3; i++) {
+        try {
+          const r = await apiFetch('/api/register/upgrade-handle', auth.token, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_handle: name }),
+          });
           const data = await r.json();
           if (data.token) {
             const newAuth = { ...auth, handle: name, token: data.token };
             setAuth(newAuth);
             localStorage.setItem('nadmail_auth', JSON.stringify(newAuth));
+            upgraded = true;
+            break;
           }
-        });
-      } catch {}
+          if (r.ok) { upgraded = true; break; }
+        } catch {}
+        // Wait 2s before retry
+        if (i < 2) await new Promise(r => setTimeout(r, 2000));
+      }
 
       setSuccess(true);
-      setStatus('');
+      setStatus(upgraded
+        ? `✅ ${name}@nadmail.ai is ready!`
+        : `✅ ${name}.nad registered! Refresh to claim your email.`
+      );
       setError('');
     } catch (e: any) {
       const msg = e?.shortMessage || e?.message || 'Transaction failed';
