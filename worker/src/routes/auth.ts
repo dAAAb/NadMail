@@ -146,8 +146,40 @@ authRoutes.post('/agent-register', async (c) => {
         return c.json({ error: 'This name has already been claimed' }, 409);
       }
       claimFreeName = true;
+    } else {
+      // Not in free pool — check if this .nad name exists on NNS
+      // If it does, only the NFT owner can claim this handle on NadMail
+      const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
+      try {
+        const { createPublicClient, http } = await import('viem');
+        const client = createPublicClient({
+          chain: { id: 143, name: 'Monad', nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } } as any,
+          transport: http(rpcUrl),
+        });
+        const isAvailable = await client.readContract({
+          address: '0xCc7a1bfF8845573dbF0B3b96e25B9b549d4a2eC7',
+          abi: [{ inputs: [{ name: 'name', type: 'string' }], name: 'isNameAvailable', outputs: [{ name: '', type: 'bool' }], stateMutability: 'view', type: 'function' }] as const,
+          functionName: 'isNameAvailable',
+          args: [handle],
+        });
+
+        if (!isAvailable) {
+          // .nad name is taken on NNS — verify this wallet owns it
+          const ownedNames = await getNadNamesForWallet(wallet, rpcUrl);
+          const ownsIt = ownedNames.some(n => n.toLowerCase() === handle);
+          if (!ownsIt) {
+            return c.json({
+              error: `${handle}.nad is owned by someone else on NNS. This handle is reserved for the .nad NFT holder.`,
+              code: 'reserved_for_nns_owner',
+              hint: `If you own ${handle}.nad, make sure you're using the correct wallet. Otherwise, try a different handle or register with your wallet address.`,
+            }, 403);
+          }
+        }
+      } catch (e: any) {
+        // Non-critical: if NNS check fails, allow registration to continue
+        console.log(`[agent-register] NNS availability check failed for ${handle}: ${e.message}`);
+      }
     }
-    // If not in free pool, allow as custom handle (e.g. user already owns their own .nad)
 
     nadName = `${handle}.nad`;
   } else {

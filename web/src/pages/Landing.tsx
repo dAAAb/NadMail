@@ -61,6 +61,9 @@ export default function Landing() {
     price_info?: {
       price_mon: number;
       price_wei: string;
+      available_nns: boolean;
+      available_nadmail: boolean;
+      reserved_for_nns_owner?: boolean;
       discount?: { description: string; percent: number; buyer_eligible?: boolean } | null;
       discounted_price_mon: number;
       proxy_buy: { service_fee_percent: number; fee_mon: number; total_mon: number; total_wei: string; available: boolean; deposit_address: string };
@@ -95,15 +98,12 @@ export default function Landing() {
           setResult({ ...data, registered: true });
         } else {
           const name = trimmed.toLowerCase();
-          // Not registered — check NNS price
+          // Not registered — check NNS price + availability
           let priceInfo = null;
           try {
             const priceRes = await fetch(`${API_BASE}/api/register/nad-name-price/${encodeURIComponent(name)}`);
             if (priceRes.ok) {
-              const priceData = await priceRes.json();
-              if (priceData.available_nns && priceData.available_nadmail) {
-                priceInfo = priceData;
-              }
+              priceInfo = await priceRes.json();
             }
           } catch {}
           setResult({
@@ -236,7 +236,58 @@ export default function Landing() {
                   </div>
                 )}
               </>
+            ) : result.price_info && !result.price_info.available_nadmail ? (
+              /* ── 🔴 Handle taken on NadMail ── */
+              <>
+                <div className="text-gray-500 text-xs mb-1">Unavailable</div>
+                <div className="font-mono text-xl text-red-400 font-bold mb-3 break-all">
+                  {result.email}
+                </div>
+                <p className="text-gray-400 text-sm">
+                  This handle is already registered on NadMail. Try another name.
+                </p>
+              </>
+            ) : result.price_info && !result.price_info.available_nns && result.price_info.available_nadmail ? (
+              /* ── 🟡 .nad taken on NNS, NadMail available → Reserved for .nad holder ── */
+              <>
+                <div className="text-gray-500 text-xs mb-1">Reserved</div>
+                <div className="font-mono text-xl text-yellow-400 font-bold mb-3 break-all">
+                  {result.email}
+                </div>
+                <div className="bg-yellow-900/20 border border-yellow-800 rounded-lg p-4 mb-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-lg">🔒</span>
+                    <span className="text-yellow-300 text-sm font-medium">
+                      Reserved for {result.handle}.nad owner
+                    </span>
+                  </div>
+                  <p className="text-gray-400 text-sm mb-3">
+                    <span className="font-mono text-white">{result.handle}.nad</span> is already owned on NNS.
+                    This email is reserved for the NFT holder.
+                  </p>
+                  <p className="text-gray-500 text-xs">
+                    If you own <span className="font-mono">{result.handle}.nad</span>, connect your wallet in the Dashboard to claim this email and auto-create your <span className="text-nad-purple font-mono">${result.handle?.toUpperCase()}</span> meme coin.
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <a
+                    href="/dashboard"
+                    className="inline-block bg-nad-purple text-white px-6 py-2.5 rounded-lg font-medium hover:bg-purple-600 transition text-sm text-center"
+                  >
+                    I own this .nad — Connect Wallet
+                  </a>
+                  <a
+                    href={result.price_info?.referral?.url || 'https://app.nad.domains/'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-block border border-gray-600 text-gray-300 px-6 py-2.5 rounded-lg font-medium hover:bg-gray-800 transition text-sm text-center"
+                  >
+                    Buy {result.handle}.nad on NNS ↗
+                  </a>
+                </div>
+              </>
             ) : (
+              /* ── 🟢 Fully available (NNS + NadMail) ── */
               <>
                 <div className="text-gray-500 text-xs mb-1">Available!</div>
                 <div className="font-mono text-xl text-green-400 font-bold mb-3 break-all">

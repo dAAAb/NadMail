@@ -192,9 +192,25 @@ registerRoutes.post('/', authMiddleware(), async (c) => {
           (n) => n.toLowerCase() === requestedHandle,
         );
         if (!ownsName) {
+          // Check if the name exists on NNS at all (owned by someone else)
+          const client = createPublicClient({ chain: monad, transport: http(rpcUrl) });
+          let nameExistsOnNns = false;
+          try {
+            const avail = await client.readContract({
+              address: NNS_PROXY,
+              abi: proxyAbi,
+              functionName: 'isNameAvailable',
+              args: [requestedHandle],
+            });
+            nameExistsOnNns = !avail;
+          } catch {}
+
           return c.json({
-            error: 'You do not own this .nad name',
-            hint: 'You can claim a free name, use your own .nad name, or register with 0x address',
+            error: nameExistsOnNns
+              ? `${requestedHandle}.nad is owned by someone else on NNS. This handle is reserved for the .nad NFT holder.`
+              : 'You do not own this .nad name',
+            code: nameExistsOnNns ? 'reserved_for_nns_owner' : 'not_owner',
+            hint: 'You can claim a free name, use your own .nad name, or register with your wallet address (0x).',
           }, 403);
         }
         isOwnedNad = true;
@@ -661,11 +677,16 @@ registerRoutes.get('/nad-name-price/:name', async (c) => {
     // Generate referral URL
     const referralUrl = `https://app.nad.domains?rc=${encodeReferralCode(NNS_REFERRER)}`;
 
+    // Determine if this name is reserved for its NNS owner
+    const reservedForNnsOwner = !isAvailable && !nadmailTaken;
+
     return c.json({
       name,
       nad_name: `${name}.nad`,
       available_nns: isAvailable,
       available_nadmail: !nadmailTaken,
+      reserved_for_nns_owner: reservedForNnsOwner,
+      can_claim: !nadmailTaken && (isAvailable || false), // Only claimable if NNS available OR you own the .nad (checked at registration time)
 
       // Pricing
       price_mon: priceMon,
