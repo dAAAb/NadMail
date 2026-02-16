@@ -826,44 +826,13 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
     return c.json({ error: `${name}.nad is not available on NNS` }, 409);
   }
 
-  // Check for active discounts (same logic as nad-name-price endpoint)
-  let discountPercent = 0;
-  let discountDescription: string | null = null;
-  try {
-    const activeDiscounts = await client.readContract({
-      address: NNS_REGISTRAR,
-      abi: registrarAbi,
-      functionName: 'getActiveDiscounts',
-      args: [],
-    }) as any[];
-
-    // Find DayOneMainnet (Xmas Gift) discount — skip Freemint/100% discounts
-    // which require specific proof and aren't universally available
-    for (const d of activeDiscounts) {
-      if (!d.active) continue;
-      const pct = Number(d.discountPercent);
-      // Skip 100% discounts (Freemint) — they need specific eligibility proofs
-      if (pct >= 100) continue;
-      // Decode key to check name
-      const keyHex = (d.key as string).replace(/0+$/, '');
-      const keyStr = Buffer.from(keyHex.replace('0x', ''), 'hex').toString('utf-8').replace(/\0/g, '');
-      if (keyStr === 'DayOneMainnet' && pct > discountPercent) {
-        discountPercent = pct;
-        discountDescription = d.description;
-      }
-    }
-  } catch (e: any) {
-    console.log(`[buy-nad-name/quote] Discount lookup failed: ${e.message}`);
-  }
-
-  // Apply discount to base price
-  const discountedPriceWei = discountPercent > 0
-    ? basePriceWei - (basePriceWei * BigInt(discountPercent)) / 100n
-    : basePriceWei;
-
-  // Calculate 15% convenience fee on discounted price
-  const feeWei = (discountedPriceWei * 15n) / 100n;
-  const totalWei = discountedPriceWei + feeWei;
+  // Proxy buy: NO discount applied.
+  // NNS discount verifiers check msg.sender, which is our Worker wallet (not the buyer).
+  // Worker pays full NNS price. The 15% service fee is on top of full price.
+  // Note: nad-name-price endpoint still shows discounts for the Dashboard
+  // (where users pay directly via MetaMask and get the discount themselves).
+  const feeWei = (basePriceWei * 15n) / 100n;
+  const totalWei = basePriceWei + feeWei;
 
   // Create pending order
   const now = Math.floor(Date.now() / 1000);
@@ -872,10 +841,9 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
   await c.env.DB.prepare(
     `INSERT INTO proxy_purchases (id, wallet, name, status, price_wei, fee_wei, total_wei, created_at)
      VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`
-  ).bind(orderId, auth.wallet, name, discountedPriceWei.toString(), feeWei.toString(), totalWei.toString(), now).run();
+  ).bind(orderId, auth.wallet, name, basePriceWei.toString(), feeWei.toString(), totalWei.toString(), now).run();
 
-  const baseMon = parseFloat(formatEther(basePriceWei));
-  const priceMon = parseFloat(formatEther(discountedPriceWei));
+  const priceMon = parseFloat(formatEther(basePriceWei));
   const feeMon = parseFloat(formatEther(feeWei));
   const totalMon = parseFloat(formatEther(totalWei));
 
@@ -884,16 +852,14 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
     name,
     nad_name: `${name}.nad`,
     price: {
-      base_mon: baseMon,
+      base_mon: priceMon,
       base_wei: basePriceWei.toString(),
-      discount: discountDescription ? { description: discountDescription, percent: discountPercent } : null,
-      discounted_mon: priceMon,
-      discounted_wei: discountedPriceWei.toString(),
       fee_percent: CONVENIENCE_FEE_RATE * 100,
       fee_mon: feeMon,
       fee_wei: feeWei.toString(),
       total_mon: totalMon,
       total_wei: totalWei.toString(),
+      note: 'Proxy purchase uses full NNS price (discounts only available via Dashboard with MetaMask).',
     },
     payment: {
       deposit_address: c.env.WALLET_ADDRESS,
@@ -996,30 +962,7 @@ registerRoutes.post('/buy-nad-name', authMiddleware(), async (c) => {
         return c.json({ error: `${name}.nad is no longer available` }, 409);
       }
       priceWei = priceResult.base;
-
-      // Apply discounts (same as quote endpoint)
-      try {
-        const activeDiscounts = await queryClient.readContract({
-          address: NNS_REGISTRAR,
-          abi: registrarAbi,
-          functionName: 'getActiveDiscounts',
-          args: [],
-        }) as any[];
-        let bestDiscount = 0;
-        for (const d of activeDiscounts) {
-          if (!d.active) continue;
-          const pct = Number(d.discountPercent);
-          if (pct >= 100) continue; // Skip Freemint
-          const keyHex = (d.key as string).replace(/0+$/, '');
-          const keyStr = Buffer.from(keyHex.replace('0x', ''), 'hex').toString('utf-8').replace(/\0/g, '');
-          if (keyStr === 'DayOneMainnet' && pct > bestDiscount) {
-            bestDiscount = pct;
-          }
-        }
-        if (bestDiscount > 0) {
-          priceWei = priceWei - (priceWei * BigInt(bestDiscount)) / 100n;
-        }
-      } catch {}
+      // Proxy buy: full price (no discount — see nns-purchase.ts for why)
     } catch (e: any) {
       return c.json({ error: `Failed to query NNS: ${e.message}` }, 500);
     }

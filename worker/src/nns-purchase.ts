@@ -271,37 +271,13 @@ export async function executeNnsPurchase(
     throw new Error('Worker wallet not configured');
   }
 
-  // 1. 嘗試取得折扣 proof（如果沒有提供）
-  let discountKey = options?.discountKey || ZERO_BYTES32;
-  let discountClaimProof = options?.discountClaimProof || '0x';
-  let discountPercent = options?.discountPercent || 0;
-
-  if (discountKey === ZERO_BYTES32) {
-    try {
-      const proofs = await getDiscountProofs(nameOwner, name);
-      // 找到最大折扣
-      if (proofs.length > 0) {
-        // 需要比對 activeDiscounts 來找折扣百分比
-        // 暫時用 DayOneMainnet (Xmas Gift 50%) 作為預設最佳折扣
-        const bestProof = proofs.find(p =>
-          p.discountKey === 'DayOneMainnet' && p.validationData !== ZERO_BYTES32
-        ) || proofs.find(p => p.validationData !== ZERO_BYTES32);
-
-        if (bestProof) {
-          // 將 discountKey 轉為 bytes32
-          const keyBytes = new TextEncoder().encode(bestProof.discountKey);
-          const padded = new Uint8Array(32);
-          padded.set(keyBytes.slice(0, 32));
-          discountKey = '0x' + Array.from(padded).map(b => b.toString(16).padStart(2, '0')).join('') as `0x${string}`;
-          discountClaimProof = bestProof.validationData;
-          // Note: actual discount % will be applied by the contract
-          console.log(`[nns-purchase] Using discount: ${bestProof.discountKey}`);
-        }
-      }
-    } catch (e: any) {
-      console.log(`[nns-purchase] Discount lookup failed, proceeding without: ${e.message}`);
-    }
-  }
+  // Proxy purchases: do NOT use discounts.
+  // NNS discount verifiers check msg.sender eligibility, but in proxy mode
+  // msg.sender is the Worker wallet, not the nameOwner. This causes reverts.
+  // Instead, we pay full price and pass the savings as a lower service fee to users.
+  const discountKey = ZERO_BYTES32;
+  const discountClaimProof = '0x';
+  console.log(`[nns-purchase] Proxy mode: using full price (no discount) for ${name}`);
 
   // 2. Referrer（使用 diplomat.nad 作為預設）
   const referrer = options?.referrer || (env as any).NNS_REFERRER || ZERO_ADDRESS;
@@ -325,11 +301,8 @@ export async function executeNnsPurchase(
     transport: http(env.MONAD_RPC_URL),
   });
 
-  // 5. 計算實際付款金額（含折扣）
-  let paymentValue = priceWei;
-  if (discountPercent > 0) {
-    paymentValue = priceWei - (priceWei * BigInt(discountPercent)) / 100n;
-  }
+  // 5. Payment value = full price (priceWei passed in is the base/undiscounted price)
+  const paymentValue = priceWei;
 
   // 6. 呼叫 registerWithSignature（Worker 付 MON，NFT 鑄造給 nameOwner）
   const hash = await walletClient.writeContract({
