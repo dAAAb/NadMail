@@ -775,17 +775,23 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
     return c.json({ error: `${name} is already registered on NadMail` }, 409);
   }
 
-  // Check for existing active order
+  // Check for existing active order (expire stale pending orders)
   const existingOrder = await c.env.DB.prepare(
-    "SELECT id, status FROM proxy_purchases WHERE wallet = ? AND name = ? AND status IN ('pending', 'paid', 'purchasing')"
-  ).bind(auth.wallet, name).first<{ id: string; status: string }>();
+    "SELECT id, status, created_at FROM proxy_purchases WHERE wallet = ? AND name = ? AND status IN ('pending', 'paid', 'purchasing')"
+  ).bind(auth.wallet, name).first<{ id: string; status: string; created_at: number }>();
 
   if (existingOrder) {
-    return c.json({
-      error: 'You already have an active order for this name',
-      existing_order_id: existingOrder.id,
-      status: existingOrder.status,
-    }, 409);
+    const nowTs = Math.floor(Date.now() / 1000);
+    if (existingOrder.status === 'pending' && nowTs - existingOrder.created_at > QUOTE_EXPIRY_SECONDS) {
+      // Expire stale pending order — allow new quote
+      await c.env.DB.prepare("UPDATE proxy_purchases SET status = 'expired' WHERE id = ?").bind(existingOrder.id).run();
+    } else {
+      return c.json({
+        error: 'You already have an active order for this name',
+        existing_order_id: existingOrder.id,
+        status: existingOrder.status,
+      }, 409);
+    }
   }
 
   // Query NNS on-chain availability + price
@@ -944,13 +950,21 @@ registerRoutes.post('/buy-nad-name', authMiddleware(), async (c) => {
 
   // ── Find pending order or create one on the fly ──
   let order = await c.env.DB.prepare(
-    "SELECT id, total_wei, price_wei, fee_wei FROM proxy_purchases WHERE wallet = ? AND name = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1"
-  ).bind(auth.wallet, name).first<{ id: string; total_wei: string; price_wei: string; fee_wei: string }>();
+    "SELECT id, total_wei, price_wei, fee_wei, created_at FROM proxy_purchases WHERE wallet = ? AND name = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1"
+  ).bind(auth.wallet, name).first<{ id: string; total_wei: string; price_wei: string; fee_wei: string; created_at: number }>();
 
   let totalWeiRequired: bigint;
   let priceWei: bigint;
   let feeWei: bigint;
   let orderId: string;
+
+  const now = Math.floor(Date.now() / 1000);
+  // Check if order is expired (10 min TTL)
+  if (order && (order as any).created_at && now - (order as any).created_at > QUOTE_EXPIRY_SECONDS) {
+    // Expire old order
+    await c.env.DB.prepare("UPDATE proxy_purchases SET status = 'expired' WHERE id = ?").bind(order.id).run();
+    order = null;
+  }
 
   if (order) {
     totalWeiRequired = BigInt(order.total_wei);
