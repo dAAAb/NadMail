@@ -831,10 +831,18 @@ registerRoutes.post('/buy-nad-name/quote', authMiddleware(), async (c) => {
       args: [],
     }) as any[];
 
-    // Find best discount (prefer DayOneMainnet / Xmas Gift)
+    // Find DayOneMainnet (Xmas Gift) discount — skip Freemint/100% discounts
+    // which require specific proof and aren't universally available
     for (const d of activeDiscounts) {
-      if (d.active && Number(d.discountPercent) > discountPercent) {
-        discountPercent = Number(d.discountPercent);
+      if (!d.active) continue;
+      const pct = Number(d.discountPercent);
+      // Skip 100% discounts (Freemint) — they need specific eligibility proofs
+      if (pct >= 100) continue;
+      // Decode key to check name
+      const keyHex = (d.key as string).replace(/0+$/, '');
+      const keyStr = Buffer.from(keyHex.replace('0x', ''), 'hex').toString('utf-8').replace(/\0/g, '');
+      if (keyStr === 'DayOneMainnet' && pct > discountPercent) {
+        discountPercent = pct;
         discountDescription = d.description;
       }
     }
@@ -985,8 +993,13 @@ registerRoutes.post('/buy-nad-name', authMiddleware(), async (c) => {
         }) as any[];
         let bestDiscount = 0;
         for (const d of activeDiscounts) {
-          if (d.active && Number(d.discountPercent) > bestDiscount) {
-            bestDiscount = Number(d.discountPercent);
+          if (!d.active) continue;
+          const pct = Number(d.discountPercent);
+          if (pct >= 100) continue; // Skip Freemint
+          const keyHex = (d.key as string).replace(/0+$/, '');
+          const keyStr = Buffer.from(keyHex.replace('0x', ''), 'hex').toString('utf-8').replace(/\0/g, '');
+          if (keyStr === 'DayOneMainnet' && pct > bestDiscount) {
+            bestDiscount = pct;
           }
         }
         if (bestDiscount > 0) {
