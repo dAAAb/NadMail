@@ -302,37 +302,25 @@ adminRoutes.post('/downgrade-handles', adminAuth(), async (c) => {
     }
 
     // Execute downgrade
+    try {
     const now = Math.floor(Date.now() / 1000);
+    const newTokenSymbol = account.token_address ? newHandle.slice(0, 10).toUpperCase() : account.token_symbol;
 
-    // 1. Update account
-    await c.env.DB.prepare(
-      'UPDATE accounts SET handle = ?, nad_name = NULL, previous_handle = ? WHERE wallet = ?'
-    ).bind(newHandle, h, wallet).run();
+    // Use batch to update all tables atomically
+    // Order: child tables first, then parent (accounts) — FK safe
+    await c.env.DB.batch([
+      // Child tables first
+      c.env.DB.prepare('UPDATE emails SET handle = ? WHERE handle = ?').bind(newHandle, h),
+      c.env.DB.prepare('UPDATE daily_email_counts SET handle = ? WHERE handle = ?').bind(newHandle, h),
+      c.env.DB.prepare('UPDATE credit_transactions SET handle = ? WHERE handle = ?').bind(newHandle, h),
+      c.env.DB.prepare('UPDATE daily_emobuy_totals SET handle = ? WHERE handle = ?').bind(newHandle, h),
+      // Parent table last
+      c.env.DB.prepare(
+        'UPDATE accounts SET handle = ?, nad_name = NULL, previous_handle = ?, token_symbol = CASE WHEN token_address IS NOT NULL THEN ? ELSE token_symbol END WHERE wallet = ?'
+      ).bind(newHandle, h, newTokenSymbol, wallet),
+    ]);
 
-    // 2. Update emails
-    await c.env.DB.prepare('UPDATE emails SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
-
-    // 3. Update daily_email_counts
-    await c.env.DB.prepare('UPDATE daily_email_counts SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
-
-    // 4. Update credit_transactions
-    await c.env.DB.prepare('UPDATE credit_transactions SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
-
-    // 5. Update daily_emobuy_totals
-    await c.env.DB.prepare('UPDATE daily_emobuy_totals SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
-
-    // 6. Create new 0x token if needed (they already have a token from before)
     let newTokenAddress = account.token_address;
-    let newTokenSymbol = account.token_symbol;
-
-    // Check if we need a new token for the 0x handle
-    // Actually, keep the old token — just update the symbol reference in DB
-    if (account.token_address) {
-      newTokenSymbol = newHandle.slice(0, 10).toUpperCase();
-      await c.env.DB.prepare(
-        'UPDATE accounts SET token_symbol = ? WHERE handle = ?'
-      ).bind(newTokenSymbol, newHandle).run();
-    }
 
     // 7. Notify the user
     if (notify) {
@@ -369,6 +357,10 @@ adminRoutes.post('/downgrade-handles', adminAuth(), async (c) => {
       notified: notify,
       status: 'downgraded',
     });
+    } catch (e: any) {
+      console.log(`[admin] Downgrade failed for ${h}: ${e.message}`);
+      results.push({ handle: h, status: 'error', error: e.message });
+    }
   }
 
   return c.json({
