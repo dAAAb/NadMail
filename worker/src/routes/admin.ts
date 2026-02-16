@@ -306,18 +306,36 @@ adminRoutes.post('/downgrade-handles', adminAuth(), async (c) => {
     const now = Math.floor(Date.now() / 1000);
     const newTokenSymbol = account.token_address ? newHandle.slice(0, 10).toUpperCase() : account.token_symbol;
 
-    // D1 FK workaround: use raw exec() with all statements in one string
-    // This ensures PRAGMA foreign_keys = OFF is in the same session
-    const sql = `
-      PRAGMA foreign_keys = OFF;
-      UPDATE accounts SET handle = '${newHandle}', nad_name = NULL, previous_handle = '${h}', token_symbol = '${newTokenSymbol || ''}' WHERE wallet = '${wallet}';
-      UPDATE emails SET handle = '${newHandle}' WHERE handle = '${h}';
-      UPDATE daily_email_counts SET handle = '${newHandle}' WHERE handle = '${h}';
-      UPDATE credit_transactions SET handle = '${newHandle}' WHERE handle = '${h}';
-      UPDATE daily_emobuy_totals SET handle = '${newHandle}' WHERE handle = '${h}';
-      PRAGMA foreign_keys = ON;
-    `;
-    await c.env.DB.exec(sql);
+    // D1 FK workaround: exec() multi-statement SQL
+    const escapeSql = (s: string) => s.replace(/'/g, "''");
+    const nh = escapeSql(newHandle);
+    const oh = escapeSql(h);
+    const wl = escapeSql(wallet);
+    const ts = escapeSql(newTokenSymbol || '');
+
+    const sql = [
+      `PRAGMA foreign_keys = OFF`,
+      `UPDATE emails SET handle = '${nh}' WHERE handle = '${oh}'`,
+      `UPDATE daily_email_counts SET handle = '${nh}' WHERE handle = '${oh}'`,
+      `UPDATE credit_transactions SET handle = '${nh}' WHERE handle = '${oh}'`,
+      `UPDATE daily_emobuy_totals SET handle = '${nh}' WHERE handle = '${oh}'`,
+      `UPDATE accounts SET handle = '${nh}', nad_name = NULL, previous_handle = '${oh}', token_symbol = '${ts}' WHERE wallet = '${wl}'`,
+      `PRAGMA foreign_keys = ON`,
+    ].join(';\n');
+
+    try {
+      await c.env.DB.exec(sql);
+    } catch (execErr: any) {
+      // exec might throw but still succeed — verify
+      console.log(`[admin] exec error (may be benign): ${execErr.message}`);
+    }
+
+    // Verify the downgrade actually happened
+    const verify = await c.env.DB.prepare('SELECT handle FROM accounts WHERE wallet = ?').bind(wallet).first<{ handle: string }>();
+    if (!verify || verify.handle !== newHandle) {
+      results.push({ handle: h, status: 'error', error: 'Downgrade verification failed — handle unchanged' });
+      continue;
+    }
 
     let newTokenAddress = account.token_address;
 
