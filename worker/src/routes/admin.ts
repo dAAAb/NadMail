@@ -1,6 +1,10 @@
 import { Hono } from 'hono';
+import { createPublicClient, http } from 'viem';
 import { Env } from '../types';
 import { sendInternalEmail } from '../send-internal';
+import { getNadNamesForWallet } from '../nns-lookup';
+import { createToken as createNadFunToken, distributeInitialTokens } from '../nadfun';
+import { createToken } from '../auth';
 
 export const adminRoutes = new Hono<{ Bindings: Env }>();
 
@@ -124,4 +128,251 @@ adminRoutes.post('/send', adminAuth(), async (c) => {
     console.log(`[admin] Send failed: ${e.message}`);
     return c.json({ error: e.message }, 500);
   }
+});
+
+const NNS_PROXY = '0xCc7a1bfF8845573dbF0B3b96e25B9b549d4a2eC7' as const;
+const proxyAbi = [
+  {
+    inputs: [{ name: 'name', type: 'string' }],
+    name: 'isNameAvailable',
+    outputs: [{ name: '', type: 'bool' }],
+    stateMutability: 'view' as const,
+    type: 'function' as const,
+  },
+] as const;
+
+const monad = {
+  id: 143,
+  name: 'Monad',
+  nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
+  rpcUrls: { default: { http: ['https://rpc.monad.xyz'] } },
+} as const;
+
+/**
+ * GET /api/admin/audit-handles
+ * Find accounts with non-0x handles that don't own the corresponding .nad name.
+ * Auth: Bearer ADMIN_SECRET
+ */
+adminRoutes.get('/audit-handles', adminAuth(), async (c) => {
+  const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
+  const client = createPublicClient({ chain: monad, transport: http(rpcUrl) });
+
+  // Get all accounts with non-0x handles
+  const rows = await c.env.DB.prepare(
+    "SELECT handle, wallet, nad_name, token_address, token_symbol, created_at FROM accounts WHERE handle NOT LIKE '0x%' ORDER BY created_at"
+  ).all<{ handle: string; wallet: string; nad_name: string | null; token_address: string | null; token_symbol: string | null; created_at: number }>();
+
+  const accounts = rows.results || [];
+  const issues: any[] = [];
+  const ok: any[] = [];
+
+  for (const acc of accounts) {
+    // Skip admin/system handles
+    if (['diplomat', 'nadmail'].includes(acc.handle)) {
+      ok.push({ handle: acc.handle, status: 'system_account' });
+      continue;
+    }
+
+    // Check if the .nad name is available on NNS (meaning nobody owns it)
+    let nnsAvailable = true;
+    try {
+      nnsAvailable = await client.readContract({
+        address: NNS_PROXY,
+        abi: proxyAbi,
+        functionName: 'isNameAvailable',
+        args: [acc.handle],
+      });
+    } catch {
+      // If check fails, skip
+      ok.push({ handle: acc.handle, status: 'nns_check_failed' });
+      continue;
+    }
+
+    if (nnsAvailable) {
+      // .nad is available — this handle was claimed without NNS ownership
+      // Check if it came from our free pool
+      const freeName = await c.env.DB.prepare(
+        'SELECT name, claimed_by FROM free_nad_names WHERE name = ?'
+      ).bind(acc.handle).first<{ name: string; claimed_by: string | null }>();
+
+      if (freeName && freeName.claimed_by === acc.wallet) {
+        ok.push({ handle: acc.handle, status: 'free_pool_claim', wallet: acc.wallet });
+        continue;
+      }
+
+      issues.push({
+        handle: acc.handle,
+        wallet: acc.wallet,
+        token_address: acc.token_address,
+        token_symbol: acc.token_symbol,
+        nad_name: acc.nad_name,
+        reason: 'nns_available_but_handle_claimed',
+        description: `${acc.handle}.nad is available on NNS but claimed on NadMail without ownership`,
+      });
+    } else {
+      // .nad is taken — check if this wallet owns it
+      let ownedNames: string[] = [];
+      try {
+        ownedNames = await getNadNamesForWallet(acc.wallet, rpcUrl);
+      } catch { /* skip */ }
+
+      const ownsIt = ownedNames.some(n => n.toLowerCase() === acc.handle);
+
+      if (ownsIt) {
+        ok.push({ handle: acc.handle, status: 'legitimate_owner', wallet: acc.wallet });
+      } else {
+        issues.push({
+          handle: acc.handle,
+          wallet: acc.wallet,
+          token_address: acc.token_address,
+          token_symbol: acc.token_symbol,
+          nad_name: acc.nad_name,
+          reason: 'nns_owned_by_others',
+          description: `${acc.handle}.nad is owned by someone else on NNS, not by wallet ${acc.wallet.slice(0, 10)}...`,
+        });
+      }
+    }
+  }
+
+  return c.json({
+    total_accounts: accounts.length,
+    issues_found: issues.length,
+    ok_count: ok.length,
+    issues,
+    ok,
+  });
+});
+
+/**
+ * POST /api/admin/downgrade-handles
+ * Downgrade illegitimate handles back to 0x addresses.
+ * Auth: Bearer ADMIN_SECRET
+ * Body: { handles: ["openclaw", ...], dry_run?: boolean, notify?: boolean }
+ */
+adminRoutes.post('/downgrade-handles', adminAuth(), async (c) => {
+  const body = await c.req.json<{
+    handles: string[];
+    dry_run?: boolean;
+    notify?: boolean;
+  }>().catch(() => null);
+
+  if (!body || !body.handles || body.handles.length === 0) {
+    return c.json({ error: 'handles array is required' }, 400);
+  }
+
+  const dryRun = body.dry_run !== false; // Default: dry_run=true for safety
+  const notify = body.notify ?? true;
+  const results: any[] = [];
+
+  for (const handle of body.handles) {
+    const h = handle.toLowerCase().trim();
+
+    const account = await c.env.DB.prepare(
+      'SELECT handle, wallet, token_address, token_symbol, nad_name FROM accounts WHERE handle = ?'
+    ).bind(h).first<{ handle: string; wallet: string; token_address: string | null; token_symbol: string | null; nad_name: string | null }>();
+
+    if (!account) {
+      results.push({ handle: h, status: 'not_found' });
+      continue;
+    }
+
+    // Resolve new 0x handle
+    const wallet = account.wallet;
+    let newHandle = wallet.slice(0, 10); // 0x + 8 hex
+    let suffix = 10;
+    while (suffix <= 42) {
+      const existing = await c.env.DB.prepare(
+        'SELECT handle FROM accounts WHERE handle = ? AND wallet != ?'
+      ).bind(newHandle, wallet).first();
+      if (!existing) break;
+      suffix += 2;
+      newHandle = wallet.slice(0, suffix);
+    }
+
+    if (dryRun) {
+      results.push({
+        handle: h,
+        new_handle: newHandle,
+        wallet: account.wallet,
+        token_address: account.token_address,
+        token_symbol: account.token_symbol,
+        status: 'would_downgrade',
+      });
+      continue;
+    }
+
+    // Execute downgrade
+    const now = Math.floor(Date.now() / 1000);
+
+    // 1. Update account
+    await c.env.DB.prepare(
+      'UPDATE accounts SET handle = ?, nad_name = NULL, previous_handle = ? WHERE wallet = ?'
+    ).bind(newHandle, h, wallet).run();
+
+    // 2. Update emails
+    await c.env.DB.prepare('UPDATE emails SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
+
+    // 3. Update daily_email_counts
+    await c.env.DB.prepare('UPDATE daily_email_counts SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
+
+    // 4. Update credit_transactions
+    await c.env.DB.prepare('UPDATE credit_transactions SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
+
+    // 5. Update daily_emobuy_totals
+    await c.env.DB.prepare('UPDATE daily_emobuy_totals SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
+
+    // 6. Create new 0x token if needed (they already have a token from before)
+    let newTokenAddress = account.token_address;
+    let newTokenSymbol = account.token_symbol;
+
+    // Check if we need a new token for the 0x handle
+    // Actually, keep the old token — just update the symbol reference in DB
+    if (account.token_address) {
+      newTokenSymbol = newHandle.slice(0, 10).toUpperCase();
+      await c.env.DB.prepare(
+        'UPDATE accounts SET token_symbol = ? WHERE handle = ?'
+      ).bind(newTokenSymbol, newHandle).run();
+    }
+
+    // 7. Notify the user
+    if (notify) {
+      try {
+        // Look up diplomat account for sending
+        const diplomat = await c.env.DB.prepare(
+          'SELECT handle, wallet FROM accounts WHERE handle = ?'
+        ).bind('diplomat').first<{ handle: string; wallet: string }>();
+
+        if (diplomat) {
+          await sendInternalEmail(c.env, {
+            fromHandle: diplomat.handle,
+            fromWallet: diplomat.wallet,
+            to: `${newHandle}@${c.env.DOMAIN}`,
+            subject: `📋 Handle Update: ${h} → ${newHandle}`,
+            body: `Hi there!\n\nYour NadMail handle has been updated from "${h}" to "${newHandle}".\n\nWhy? NadMail now reserves handles for .nad name owners. Since ${h}.nad is not owned by your wallet, the handle has been released.\n\nWhat you can do:\n• Continue using ${newHandle}@nadmail.ai\n• Buy ${h}.nad at https://app.nad.domains/ to reclaim the handle\n• Your existing emails and tokens are preserved\n\nSorry for the inconvenience!\n— NadMail Team`,
+          });
+        }
+      } catch (e: any) {
+        console.log(`[admin] Notification failed for ${newHandle}: ${e.message}`);
+      }
+    }
+
+    console.log(`[admin] Downgraded: ${h} → ${newHandle} (wallet: ${wallet})`);
+
+    results.push({
+      handle: h,
+      new_handle: newHandle,
+      new_email: `${newHandle}@${c.env.DOMAIN}`,
+      wallet: account.wallet,
+      token_address: newTokenAddress,
+      old_token_symbol: account.token_symbol,
+      new_token_symbol: newTokenSymbol,
+      notified: notify,
+      status: 'downgraded',
+    });
+  }
+
+  return c.json({
+    dry_run: dryRun,
+    results,
+  });
 });
