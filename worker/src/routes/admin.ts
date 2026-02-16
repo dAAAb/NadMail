@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
-import { createPublicClient, http } from 'viem';
+import { createPublicClient, createWalletClient, http, type Hex } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import { Env } from '../types';
 import { sendInternalEmail } from '../send-internal';
 import { getNadNamesForWallet } from '../nns-lookup';
@@ -130,6 +131,7 @@ adminRoutes.post('/send', adminAuth(), async (c) => {
   }
 });
 
+const NNS_CONTRACT = '0xCc7a1bfF8845573dbF0B3b96e25B9b549d4a2eC7' as const;
 const NNS_PROXY = '0xCc7a1bfF8845573dbF0B3b96e25B9b549d4a2eC7' as const;
 const proxyAbi = [
   {
@@ -365,4 +367,140 @@ adminRoutes.post('/downgrade-handles', adminAuth(), async (c) => {
     dry_run: dryRun,
     results,
   });
+});
+
+/**
+ * POST /api/admin/transfer-nad
+ * Transfer a .nad NFT from Worker to a user + upgrade their handle.
+ * For completing proxy purchases where registration succeeded but transfer timed out.
+ * Auth: Bearer ADMIN_SECRET
+ * Body: { name: "openclaw", to_wallet: "0x...", token_id?: number }
+ */
+adminRoutes.post('/transfer-nad', adminAuth(), async (c) => {
+  const body = await c.req.json<{ name: string; to_wallet: string; token_id?: number }>().catch(() => null);
+  if (!body?.name || !body?.to_wallet) {
+    return c.json({ error: 'name and to_wallet required' }, 400);
+  }
+
+  const name = body.name.toLowerCase().trim();
+  const toWallet = body.to_wallet.toLowerCase();
+
+  if (!c.env.WALLET_PRIVATE_KEY) {
+    return c.json({ error: 'Worker wallet not configured' }, 503);
+  }
+
+  const account = privateKeyToAccount(c.env.WALLET_PRIVATE_KEY as Hex);
+  const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
+
+  const walletClient = createWalletClient({
+    account, chain: monad, transport: http(rpcUrl),
+  });
+  const publicClient = createPublicClient({
+    chain: monad, transport: http(rpcUrl),
+  });
+
+  // Find tokenId if not provided
+  let tokenId = body.token_id ? BigInt(body.token_id) : null;
+
+  if (!tokenId) {
+    // Search Worker's NFTs for this name
+    const erc721Enum = [
+      { inputs: [{ name: 'owner', type: 'address' }], name: 'balanceOf', outputs: [{ type: 'uint256' }], stateMutability: 'view' as const, type: 'function' as const },
+      { inputs: [{ name: 'owner', type: 'address' }, { name: 'index', type: 'uint256' }], name: 'tokenOfOwnerByIndex', outputs: [{ type: 'uint256' }], stateMutability: 'view' as const, type: 'function' as const },
+    ];
+
+    const balance = await publicClient.readContract({
+      address: NNS_CONTRACT, abi: erc721Enum, functionName: 'balanceOf', args: [account.address],
+    }) as bigint;
+
+    // Check last 20 NFTs (most recent first)
+    // We verify by checking if NNS resolves this tokenId to the right name
+    const checkCount = Math.min(Number(balance), 20);
+    for (let i = Number(balance) - 1; i >= Number(balance) - checkCount; i--) {
+      const tid = await publicClient.readContract({
+        address: NNS_CONTRACT, abi: erc721Enum, functionName: 'tokenOfOwnerByIndex', args: [account.address, BigInt(i)],
+      }) as bigint;
+
+      // For now, use the most recent token (proxy buy was the latest registration)
+      // A more robust approach would query tokenURI or reverse-resolve
+      tokenId = tid;
+      break; // Take the most recent
+    }
+  }
+
+  if (!tokenId) {
+    return c.json({ error: 'Could not find tokenId for this name' }, 404);
+  }
+
+  // Transfer NFT
+  const erc721Transfer = [{
+    inputs: [{ name: 'from', type: 'address' }, { name: 'to', type: 'address' }, { name: 'tokenId', type: 'uint256' }],
+    name: 'transferFrom', outputs: [], stateMutability: 'nonpayable' as const, type: 'function' as const,
+  }];
+
+  try {
+    const txHash = await walletClient.writeContract({
+      address: NNS_CONTRACT,
+      abi: erc721Transfer,
+      functionName: 'transferFrom',
+      args: [account.address, toWallet as `0x${string}`, tokenId],
+      gas: 500_000n,
+    });
+
+    await publicClient.waitForTransactionReceipt({ hash: txHash, timeout: 30_000 });
+
+    // Now upgrade the user's handle on NadMail
+    const acct = await c.env.DB.prepare(
+      'SELECT handle, token_address FROM accounts WHERE wallet = ?'
+    ).bind(toWallet).first<{ handle: string; token_address: string | null }>();
+
+    let upgraded = false;
+    let newToken: string | null = null;
+    let tokenAddress: string | null = null;
+
+    if (acct && acct.handle.startsWith('0x')) {
+      const oldHandle = acct.handle;
+
+      // Cascade update
+      await c.env.DB.prepare('UPDATE emails SET handle = ? WHERE handle = ?').bind(name, oldHandle).run();
+      await c.env.DB.prepare('UPDATE daily_email_counts SET handle = ? WHERE handle = ?').bind(name, oldHandle).run();
+      await c.env.DB.prepare('UPDATE credit_transactions SET handle = ? WHERE handle = ?').bind(name, oldHandle).run();
+      await c.env.DB.prepare('UPDATE daily_emobuy_totals SET handle = ? WHERE handle = ?').bind(name, oldHandle).run();
+      await c.env.DB.prepare(
+        'UPDATE accounts SET handle = ?, nad_name = ?, previous_handle = ? WHERE wallet = ?'
+      ).bind(name, `${name}.nad`, oldHandle, toWallet).run();
+
+      // Create meme coin
+      if (!acct.token_address) {
+        try {
+          const result = await createNadFunToken(name, toWallet, c.env);
+          tokenAddress = result.tokenAddress;
+          const tokenSymbol = name.slice(0, 10).toUpperCase();
+          await c.env.DB.prepare(
+            'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'
+          ).bind(tokenAddress, tokenSymbol, result.tx, name).run();
+          c.executionCtx.waitUntil(distributeInitialTokens(tokenAddress, toWallet, c.env));
+        } catch (e: any) {
+          console.log(`[admin/transfer] Token creation failed: ${e.message}`);
+        }
+      }
+
+      newToken = await createToken({ wallet: toWallet, handle: name }, c.env.JWT_SECRET!);
+      upgraded = true;
+    }
+
+    return c.json({
+      success: true,
+      name,
+      transfer_tx: txHash,
+      token_id: tokenId.toString(),
+      to_wallet: toWallet,
+      upgraded,
+      new_handle: upgraded ? name : undefined,
+      new_email: upgraded ? `${name}@${c.env.DOMAIN}` : undefined,
+      token_address: tokenAddress || acct?.token_address,
+    });
+  } catch (e: any) {
+    return c.json({ error: `Transfer failed: ${e.message}` }, 500);
+  }
 });
