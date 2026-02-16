@@ -306,21 +306,18 @@ adminRoutes.post('/downgrade-handles', adminAuth(), async (c) => {
     const now = Math.floor(Date.now() / 1000);
     const newTokenSymbol = account.token_address ? newHandle.slice(0, 10).toUpperCase() : account.token_symbol;
 
-    // D1 doesn't support PRAGMA foreign_keys in batch, so we use exec() for raw SQL
-    await c.env.DB.exec('PRAGMA foreign_keys = OFF');
-
-    await c.env.DB.prepare(
-      'UPDATE accounts SET handle = ?, nad_name = NULL, previous_handle = ?, token_symbol = CASE WHEN token_address IS NOT NULL THEN ? ELSE token_symbol END WHERE wallet = ?'
-    ).bind(newHandle, h, newTokenSymbol, wallet).run();
-
-    await c.env.DB.batch([
-      c.env.DB.prepare('UPDATE emails SET handle = ? WHERE handle = ?').bind(newHandle, h),
-      c.env.DB.prepare('UPDATE daily_email_counts SET handle = ? WHERE handle = ?').bind(newHandle, h),
-      c.env.DB.prepare('UPDATE credit_transactions SET handle = ? WHERE handle = ?').bind(newHandle, h),
-      c.env.DB.prepare('UPDATE daily_emobuy_totals SET handle = ? WHERE handle = ?').bind(newHandle, h),
-    ]);
-
-    await c.env.DB.exec('PRAGMA foreign_keys = ON');
+    // D1 FK workaround: use raw exec() with all statements in one string
+    // This ensures PRAGMA foreign_keys = OFF is in the same session
+    const sql = `
+      PRAGMA foreign_keys = OFF;
+      UPDATE accounts SET handle = '${newHandle}', nad_name = NULL, previous_handle = '${h}', token_symbol = '${newTokenSymbol || ''}' WHERE wallet = '${wallet}';
+      UPDATE emails SET handle = '${newHandle}' WHERE handle = '${h}';
+      UPDATE daily_email_counts SET handle = '${newHandle}' WHERE handle = '${h}';
+      UPDATE credit_transactions SET handle = '${newHandle}' WHERE handle = '${h}';
+      UPDATE daily_emobuy_totals SET handle = '${newHandle}' WHERE handle = '${h}';
+      PRAGMA foreign_keys = ON;
+    `;
+    await c.env.DB.exec(sql);
 
     let newTokenAddress = account.token_address;
 
