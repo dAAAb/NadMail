@@ -306,18 +306,24 @@ adminRoutes.post('/downgrade-handles', adminAuth(), async (c) => {
     const now = Math.floor(Date.now() / 1000);
     const newTokenSymbol = account.token_address ? newHandle.slice(0, 10).toUpperCase() : account.token_symbol;
 
-    // Disable FK checks, update all tables, re-enable FK checks
+    // D1 FK constraints: insert new handle row, migrate children, delete old row
+    // Step 1: Insert new account row with new handle (copy all data)
+    await c.env.DB.prepare(
+      `INSERT INTO accounts (handle, wallet, nad_name, previous_handle, token_address, token_symbol, token_create_tx, webhook_url, created_at, tier, credits)
+       SELECT ?, wallet, NULL, ?, token_address, CASE WHEN token_address IS NOT NULL THEN ? ELSE token_symbol END, token_create_tx, webhook_url, created_at, tier, credits
+       FROM accounts WHERE handle = ?`
+    ).bind(newHandle, h, newTokenSymbol, h).run();
+
+    // Step 2: Migrate all child table references
     await c.env.DB.batch([
-      c.env.DB.prepare('PRAGMA foreign_keys = OFF'),
-      c.env.DB.prepare(
-        'UPDATE accounts SET handle = ?, nad_name = NULL, previous_handle = ?, token_symbol = CASE WHEN token_address IS NOT NULL THEN ? ELSE token_symbol END WHERE wallet = ?'
-      ).bind(newHandle, h, newTokenSymbol, wallet),
       c.env.DB.prepare('UPDATE emails SET handle = ? WHERE handle = ?').bind(newHandle, h),
       c.env.DB.prepare('UPDATE daily_email_counts SET handle = ? WHERE handle = ?').bind(newHandle, h),
       c.env.DB.prepare('UPDATE credit_transactions SET handle = ? WHERE handle = ?').bind(newHandle, h),
       c.env.DB.prepare('UPDATE daily_emobuy_totals SET handle = ? WHERE handle = ?').bind(newHandle, h),
-      c.env.DB.prepare('PRAGMA foreign_keys = ON'),
     ]);
+
+    // Step 3: Delete old account row (now safe — no children reference it)
+    await c.env.DB.prepare('DELETE FROM accounts WHERE handle = ?').bind(h).run();
 
     let newTokenAddress = account.token_address;
 
