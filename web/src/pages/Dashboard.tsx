@@ -985,52 +985,55 @@ function RegisterEmail({
     setPurchaseError('');
 
     try {
-      // Step 1: Get quote
+      // Direct Buy: user's wallet calls NNS registrar directly (same as ProxyBuyBanner)
+      // Step 1: Get signature + calldata from our API
       setPurchaseStep('quoting');
-      const quoteRes = await apiFetch('/api/register/buy-nad-name/quote', auth.token, {
-        method: 'POST',
-        body: JSON.stringify({ name: selectedName }),
-      });
-      const quoteData = await quoteRes.json();
-      if (!quoteRes.ok) throw new Error(quoteData.error || 'Failed to get quote');
+      const buyerAddr = auth.wallet;
 
-      // Step 2: Send MON via wallet
+      const signRes = await fetch(`${API_BASE}/api/register/nad-name-sign/${encodeURIComponent(selectedName)}?buyer=${buyerAddr}`);
+      const signData = await signRes.json();
+      if (!signRes.ok || !signData.signature) {
+        throw new Error(signData.error || 'Failed to prepare registration');
+      }
+
+      // Step 2: Send TX directly to NNS registrar via user's wallet
       setPurchaseStep('paying');
       try { await switchChainAsync({ chainId: MONAD_CHAIN_ID }); } catch {}
 
-      const hash = await sendTransactionAsync({
-        to: quoteData.payment.deposit_address as `0x${string}`,
-        value: BigInt(quoteData.price.total_wei),
+      const priceWei = BigInt(signData.value || purchaseInfo.discounted_price_wei || purchaseInfo.price_wei);
+
+      const txHash = await sendTransactionAsync({
+        to: NNS_REGISTRAR_ADDR as `0x${string}`,
+        data: signData.calldata as `0x${string}`,
+        value: priceWei,
         chainId: MONAD_CHAIN_ID,
       });
 
-      // Step 3: Verify payment + execute purchase
+      // Step 3: Wait for on-chain confirmation
       setPurchaseStep('confirming');
-      const buyRes = await apiFetch('/api/register/buy-nad-name', auth.token, {
-        method: 'POST',
-        body: JSON.stringify({ name: selectedName, tx_hash: hash }),
+      const monadClient = createPublicClient({
+        chain: { id: 143, name: 'Monad', nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 }, rpcUrls: { default: { http: ['https://rpc.monad.xyz'] } } },
+        transport: http('https://rpc.monad.xyz'),
       });
-      const buyData = await buyRes.json();
-      if (!buyRes.ok) throw new Error(buyData.error || 'Purchase failed');
 
-      // Step 4: Success
+      const receipt = await monadClient.waitForTransactionReceipt({ hash: txHash, timeout: 60_000 });
+      if (receipt.status !== 'success') {
+        throw new Error('Transaction failed on-chain');
+      }
+
+      // Step 4: Register on NadMail (new user) or upgrade handle (existing 0x user)
       setPurchaseStep('success');
 
-      if (buyData.auto_upgraded && buyData.new_token) {
-        // Already had an account with 0x handle — auto-upgraded
-        setClaimedHandle(buyData.new_handle || selectedName);
-        setClaimedHasToken(true);
-        setClaimed(true);
-        setShowConfetti(true);
-        setTimeout(() => setShowConfetti(false), 4000);
-        setTimeout(() => onRegistered(buyData.new_handle || selectedName, buyData.new_token), 2000);
-      } else {
-        // New user — register with this name
-        await handleRegister(selectedName);
-      }
+      // Try to register / upgrade
+      await handleRegister(selectedName);
     } catch (e: any) {
-      setPurchaseStep('error');
-      setPurchaseError(e.message || 'Purchase failed');
+      const msg = e?.shortMessage || e?.message || 'Transaction failed';
+      if (msg.includes('User rejected') || msg.includes('denied')) {
+        setPurchaseError('Transaction cancelled. You can try again.');
+      } else {
+        setPurchaseError(msg);
+      }
+      setPurchaseStep('idle');
     }
   }
 
@@ -1222,21 +1225,32 @@ function RegisterEmail({
                     <span className="font-mono font-bold text-lg text-nad-purple">{purchaseInfo.name}.nad</span>
                     <span className="text-yellow-400 text-xs font-medium px-2 py-0.5 bg-yellow-900/30 rounded">Purchase</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div><span className="text-gray-500">Base:</span> <span className="text-gray-300 font-mono">{purchaseInfo.price_mon.toFixed(2)} MON</span></div>
-                    <div><span className="text-gray-500">Fee:</span> <span className="text-gray-300 font-mono">{purchaseInfo.proxy_buy.fee_percent}%</span></div>
-                    <div className="col-span-2"><span className="text-gray-500">Total:</span> <span className="text-yellow-300 font-mono font-bold">{purchaseInfo.proxy_buy.total_mon.toFixed(2)} MON</span></div>
-                  </div>
-                  {monBalance && (
-                    <div className={`mt-2 text-xs ${
-                      parseFloat(formatUnits(monBalance.value, monBalance.decimals)) >= purchaseInfo.proxy_buy.total_mon
-                        ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      Your balance: {parseFloat(formatUnits(monBalance.value, monBalance.decimals)).toFixed(2)} MON
-                      {parseFloat(formatUnits(monBalance.value, monBalance.decimals)) >= purchaseInfo.proxy_buy.total_mon
-                        ? ' — Sufficient' : ' — Insufficient'}
+                  <div className="text-sm space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Base:</span>
+                      <span className={`font-mono ${purchaseInfo.discount ? 'line-through text-gray-600' : 'text-gray-300'}`}>{purchaseInfo.price_mon.toFixed(2)} MON</span>
                     </div>
-                  )}
+                    {purchaseInfo.discount && (
+                      <div className="flex justify-between">
+                        <span className="text-green-400">Discount: {purchaseInfo.discount.description}</span>
+                        <span className="text-green-400 font-mono">-{purchaseInfo.discount.percent}%</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Total:</span>
+                      <span className="text-yellow-300 font-mono font-bold">{(purchaseInfo.discounted_price_mon || purchaseInfo.price_mon).toFixed(2)} MON</span>
+                    </div>
+                  </div>
+                  {monBalance && (() => {
+                    const bal = parseFloat(formatUnits(monBalance.value, monBalance.decimals));
+                    const cost = purchaseInfo.discounted_price_mon || purchaseInfo.price_mon;
+                    return (
+                      <div className={`mt-2 text-xs ${bal >= cost ? 'text-green-400' : 'text-red-400'}`}>
+                        Your balance: {bal.toFixed(2)} MON
+                        {bal >= cost ? ' — Sufficient' : ' — Insufficient'}
+                      </div>
+                    );
+                  })()}
                 </button>
               </div>
             )}
@@ -1279,9 +1293,9 @@ function RegisterEmail({
                 <div className="flex items-center gap-3">
                   <div className="animate-spin w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full" />
                   <span className="text-yellow-300 text-sm">
-                    {purchaseStep === 'quoting' && 'Getting price quote...'}
+                    {purchaseStep === 'quoting' && 'Preparing registration...'}
                     {purchaseStep === 'paying' && 'Confirm transaction in your wallet...'}
-                    {purchaseStep === 'confirming' && 'Purchasing on-chain... (this may take a moment)'}
+                    {purchaseStep === 'confirming' && 'Waiting for on-chain confirmation...'}
                     {purchaseStep === 'success' && 'Purchase complete!'}
                   </span>
                 </div>
@@ -1296,10 +1310,10 @@ function RegisterEmail({
                 className="w-full bg-yellow-600 text-white py-3 rounded-lg font-medium hover:bg-yellow-500 transition disabled:opacity-50 text-lg mb-3"
               >
                 {purchaseStep === 'idle' || purchaseStep === 'error'
-                  ? `Buy ${selectedName}.nad — ${purchaseInfo?.proxy_buy?.total_mon?.toFixed(2)} MON`
-                  : purchaseStep === 'quoting' ? 'Getting quote...'
+                  ? `Buy ${selectedName}.nad — ${purchaseInfo?.discounted_price_mon?.toFixed(2) || purchaseInfo?.proxy_buy?.total_mon?.toFixed(2) || purchaseInfo?.price_mon?.toFixed(2)} MON`
+                  : purchaseStep === 'quoting' ? 'Preparing...'
                   : purchaseStep === 'paying' ? 'Confirm in wallet...'
-                  : purchaseStep === 'confirming' ? 'Purchasing...'
+                  : purchaseStep === 'confirming' ? 'Confirming on-chain...'
                   : 'Done!'}
               </button>
             ) : (
