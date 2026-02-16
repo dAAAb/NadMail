@@ -449,56 +449,15 @@ adminRoutes.post('/transfer-nad', adminAuth(), async (c) => {
 
     await publicClient.waitForTransactionReceipt({ hash: txHash, timeout: 30_000 });
 
-    // Now upgrade the user's handle on NadMail
-    const acct = await c.env.DB.prepare(
-      'SELECT handle, token_address FROM accounts WHERE wallet = ?'
-    ).bind(toWallet).first<{ handle: string; token_address: string | null }>();
-
-    let upgraded = false;
-    let newToken: string | null = null;
-    let tokenAddress: string | null = null;
-
-    if (acct && acct.handle.startsWith('0x')) {
-      const oldHandle = acct.handle;
-
-      // Cascade update
-      await c.env.DB.prepare('UPDATE emails SET handle = ? WHERE handle = ?').bind(name, oldHandle).run();
-      await c.env.DB.prepare('UPDATE daily_email_counts SET handle = ? WHERE handle = ?').bind(name, oldHandle).run();
-      await c.env.DB.prepare('UPDATE credit_transactions SET handle = ? WHERE handle = ?').bind(name, oldHandle).run();
-      await c.env.DB.prepare('UPDATE daily_emobuy_totals SET handle = ? WHERE handle = ?').bind(name, oldHandle).run();
-      await c.env.DB.prepare(
-        'UPDATE accounts SET handle = ?, nad_name = ?, previous_handle = ? WHERE wallet = ?'
-      ).bind(name, `${name}.nad`, oldHandle, toWallet).run();
-
-      // Create meme coin
-      if (!acct.token_address) {
-        try {
-          const result = await createNadFunToken(name, toWallet, c.env);
-          tokenAddress = result.tokenAddress;
-          const tokenSymbol = name.slice(0, 10).toUpperCase();
-          await c.env.DB.prepare(
-            'UPDATE accounts SET token_address = ?, token_symbol = ?, token_create_tx = ? WHERE handle = ?'
-          ).bind(tokenAddress, tokenSymbol, result.tx, name).run();
-          c.executionCtx.waitUntil(distributeInitialTokens(tokenAddress, toWallet, c.env));
-        } catch (e: any) {
-          console.log(`[admin/transfer] Token creation failed: ${e.message}`);
-        }
-      }
-
-      newToken = await createToken({ wallet: toWallet, handle: name }, c.env.JWT_SECRET!);
-      upgraded = true;
-    }
-
+    // NFT transferred! Now user can call upgrade-handle themselves.
+    // We don't attempt handle upgrade here (FK constraint issues with D1).
     return c.json({
       success: true,
       name,
       transfer_tx: txHash,
       token_id: tokenId.toString(),
       to_wallet: toWallet,
-      upgraded,
-      new_handle: upgraded ? name : undefined,
-      new_email: upgraded ? `${name}@${c.env.DOMAIN}` : undefined,
-      token_address: tokenAddress || acct?.token_address,
+      note: `NFT transferred. User should now call POST /api/register/upgrade-handle { "new_handle": "${name}" } to complete.`,
     });
   } catch (e: any) {
     return c.json({ error: `Transfer failed: ${e.message}` }, 500);
