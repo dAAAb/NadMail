@@ -306,36 +306,17 @@ adminRoutes.post('/downgrade-handles', adminAuth(), async (c) => {
     const now = Math.floor(Date.now() / 1000);
     const newTokenSymbol = account.token_address ? newHandle.slice(0, 10).toUpperCase() : account.token_symbol;
 
-    // D1 FK workaround: exec() multi-statement SQL
-    const escapeSql = (s: string) => s.replace(/'/g, "''");
-    const nh = escapeSql(newHandle);
-    const oh = escapeSql(h);
-    const wl = escapeSql(wallet);
-    const ts = escapeSql(newTokenSymbol || '');
+    // FK: D1 checks on child INSERT/UPDATE that parent exists.
+    // So update PARENT first (changes PK but doesn't trigger child FK checks),
+    // THEN update children to match new PK (now parent exists).
+    await c.env.DB.prepare(
+      'UPDATE accounts SET handle = ?, nad_name = NULL, previous_handle = ?, token_symbol = ? WHERE wallet = ?'
+    ).bind(newHandle, h, newTokenSymbol || null, wallet).run();
 
-    const sql = [
-      `PRAGMA foreign_keys = OFF`,
-      `UPDATE emails SET handle = '${nh}' WHERE handle = '${oh}'`,
-      `UPDATE daily_email_counts SET handle = '${nh}' WHERE handle = '${oh}'`,
-      `UPDATE credit_transactions SET handle = '${nh}' WHERE handle = '${oh}'`,
-      `UPDATE daily_emobuy_totals SET handle = '${nh}' WHERE handle = '${oh}'`,
-      `UPDATE accounts SET handle = '${nh}', nad_name = NULL, previous_handle = '${oh}', token_symbol = '${ts}' WHERE wallet = '${wl}'`,
-      `PRAGMA foreign_keys = ON`,
-    ].join(';\n');
-
-    try {
-      await c.env.DB.exec(sql);
-    } catch (execErr: any) {
-      // exec might throw but still succeed — verify
-      console.log(`[admin] exec error (may be benign): ${execErr.message}`);
-    }
-
-    // Verify the downgrade actually happened
-    const verify = await c.env.DB.prepare('SELECT handle FROM accounts WHERE wallet = ?').bind(wallet).first<{ handle: string }>();
-    if (!verify || verify.handle !== newHandle) {
-      results.push({ handle: h, status: 'error', error: 'Downgrade verification failed — handle unchanged' });
-      continue;
-    }
+    await c.env.DB.prepare('UPDATE emails SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
+    await c.env.DB.prepare('UPDATE daily_email_counts SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
+    await c.env.DB.prepare('UPDATE credit_transactions SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
+    await c.env.DB.prepare('UPDATE daily_emobuy_totals SET handle = ? WHERE handle = ?').bind(newHandle, h).run();
 
     let newTokenAddress = account.token_address;
 
