@@ -702,6 +702,7 @@ export default function Dashboard() {
   // Token holdings for sidebar
   const [tokenHoldings, setTokenHoldings] = useState<{ symbol: string; address: string; balance: string; isOwn: boolean }[]>([]);
   const [showAllTokens, setShowAllTokens] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Poll for token readiness if handle exists but token_symbol is missing
   useEffect(() => {
@@ -800,7 +801,6 @@ export default function Dashboard() {
   }
 
   const primaryEmail = `${auth.handle}@nadmail.ai`;
-  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
     <div className="min-h-screen bg-nad-dark flex relative">
