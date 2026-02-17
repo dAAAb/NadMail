@@ -22,8 +22,8 @@ import {
 
 const DIPLOMAT_HANDLE = 'diplomat';
 const MAX_REPLIES_PER_CYCLE = 5;
-const POST_COOLDOWN_MS = 2 * 60 * 60 * 1000;       // 2 hours between posts
-const MOLTBOOK_ACTION_COOLDOWN_MS = 60 * 60 * 1000; // 60 min between ANY Moltbook action
+const POST_COOLDOWN_MS = 3 * 60 * 60 * 1000;       // 3 hours between posts (match cron interval)
+const MOLTBOOK_ACTION_COOLDOWN_MS = 3 * 60 * 60 * 1000; // 3 hours between ANY Moltbook action
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -44,10 +44,9 @@ export async function runDiplomatCycle(env: Env): Promise<void> {
   const state = await loadState(env.AGENT_KV);
   const portfolio = trading.loadPortfolio(state.portfolio);
 
-  // Initialize moltbookEnabledAfter if not set (48h from first deploy)
+  // Moltbook enabled immediately (account is verified)
   if (!state.moltbookEnabledAfter) {
-    state.moltbookEnabledAfter = Date.now() + 48 * 60 * 60 * 1000;
-    console.log(`[diplomat] Moltbook will be enabled after ${new Date(state.moltbookEnabledAfter).toISOString()}`);
+    state.moltbookEnabledAfter = Date.now();
   }
 
   // Look up diplomat's wallet from DB

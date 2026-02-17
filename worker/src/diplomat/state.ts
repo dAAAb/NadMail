@@ -35,7 +35,14 @@ export async function loadState(kv: KVNamespace): Promise<AgentState> {
   if (raw) {
     try {
       const data = JSON.parse(raw);
-      return { ...DEFAULT_STATE, ...data };
+      const state = { ...DEFAULT_STATE, ...data };
+      // One-time migration: reset Moltbook timers (v2026.02.17)
+      if (state.moltbookEnabledAfter > Date.now()) {
+        state.moltbookEnabledAfter = Date.now();
+        state.lastPostTime = 0;
+        state.lastMoltbookActionTime = 0;
+      }
+      return state;
     } catch {
       // corrupted, start fresh
     }
