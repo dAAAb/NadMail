@@ -16,6 +16,7 @@ interface EmailItem {
   read: number;
   created_at: number;
   microbuy_tx?: string | null;
+  emo_amount?: number | null;
 }
 
 interface AuthState {
@@ -82,7 +83,7 @@ function truncateEmail(handle: string): string {
   return `${handle.slice(0, 6)}...${handle.slice(-4)}@nadmail.ai`;
 }
 
-const MONAD_EXPLORER = 'https://explorer.monad.xyz';
+const MONAD_EXPLORER = 'https://monadscan.com';
 
 function CopyButton({ text, label }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
@@ -1757,26 +1758,46 @@ function EmailDetail({ auth }: { auth: AuthState }) {
       <div className="bg-nad-gray rounded-xl p-6 border border-gray-800">
         <h2 className="text-xl font-bold mb-4">{email.subject || '(no subject)'}</h2>
 
-        {/* Micro-buy banner */}
-        {email.microbuy_tx && (
-          <div className="bg-purple-900/20 border border-purple-700/50 rounded-lg p-4 mb-4 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">&#x1F4B0;</span>
-              <div>
-                <div className="text-purple-400 font-bold">Micro-buy: 0.001 MON</div>
-                <div className="text-purple-600 text-xs">Token investment triggered by this email</div>
+        {/* Micro-buy / Emo-buy banner */}
+        {email.microbuy_tx && (() => {
+          const emo = email.emo_amount || 0;
+          const total = 0.001 + emo;
+          const isEmo = emo > 0;
+          const emoEmoji = emo >= 0.1 ? '💎' : emo >= 0.075 ? '🚀' : emo >= 0.05 ? '🔥' : emo >= 0.025 ? '😍' : emo >= 0.01 ? '😊' : '💰';
+          const emoLabel = emo >= 0.1 ? 'WAGMI' : emo >= 0.075 ? 'Moon' : emo >= 0.05 ? 'Super Bullish' : emo >= 0.025 ? 'Bullish' : emo >= 0.01 ? 'Friendly' : '';
+          return (
+            <div className={`rounded-lg p-4 mb-4 flex items-center justify-between ${
+              isEmo
+                ? 'bg-gradient-to-r from-purple-900/30 to-orange-900/20 border border-purple-500/50'
+                : 'bg-purple-900/20 border border-purple-700/50'
+            }`}>
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">{emoEmoji}</span>
+                <div>
+                  {isEmo ? (
+                    <>
+                      <div className="text-orange-400 font-bold">Emo-boost: {total.toFixed(3)} MON <span className="text-xs font-normal text-orange-300">({emoLabel})</span></div>
+                      <div className="text-purple-600 text-xs">Base 0.001 + Boost {emo} MON</div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-purple-400 font-bold">Micro-buy: 0.001 MON</div>
+                      <div className="text-purple-600 text-xs">Token investment triggered by this email</div>
+                    </>
+                  )}
+                </div>
               </div>
+              <a
+                href={`${MONAD_EXPLORER}/tx/${email.microbuy_tx}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-purple-500 hover:text-purple-400 text-xs underline flex-shrink-0"
+              >
+                View TX
+              </a>
             </div>
-            <a
-              href={`${MONAD_EXPLORER}/tx/${email.microbuy_tx}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-purple-500 hover:text-purple-400 text-xs underline"
-            >
-              View on Explorer
-            </a>
-          </div>
-        )}
+          );
+        })()}
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-400 mb-6 pb-4 border-b border-gray-800">
           <div>
@@ -1791,9 +1812,16 @@ function EmailDetail({ auth }: { auth: AuthState }) {
             {new Date(email.created_at * 1000).toLocaleString()}
           </div>
         </div>
-        <div className="whitespace-pre-wrap text-gray-300 font-mono text-sm leading-relaxed">
-          {bodyText}
-        </div>
+        <div className="whitespace-pre-wrap text-gray-300 font-mono text-sm leading-relaxed"
+          dangerouslySetInnerHTML={{ __html: bodyText
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/(https?:\/\/[^\s)<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:#7B3FE4;text-decoration:underline;">$1</a>')
+            .replace(/\$([A-Z0-9_]{2,})/g, (m, sym) => {
+              // Try to link $TOKEN to nad.fun if followed by a nad.fun URL in parentheses
+              return `<span style="color:#7B3FE4;font-weight:bold;">${m}</span>`;
+            })
+          }}
+        />
       </div>
     </div>
   );
