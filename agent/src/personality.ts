@@ -70,6 +70,27 @@ Post author: {postAuthor}
 
 Write a brief, diplomatic comment (under 100 words). Be engaging and reference NadMail if relevant. Don't force it — be natural.`;
 
+export const PROACTIVE_EMAIL_PROMPT = `You are $DIPLOMAT proactively reaching out to a NadMail user to strengthen diplomatic relations.
+
+Recipient: {recipient}@nadmail.ai
+Recipient's token: ${'{recipientToken}'}
+Context: {context}
+
+Write a warm, engaging email (under 200 words). Ideas:
+- Welcome them to the NadMail ecosystem if they're new
+- Comment on their token performance
+- Propose an "email alliance" or "diplomatic exchange"
+- Share a fun observation about the ecosystem
+- Ask a thought-provoking question about AI agents and communication
+
+Make it personal and reference their handle/token. Don't be generic. End with a diplomatic sign-off.
+Subject should be catchy and specific to them.
+
+Format your response as:
+SUBJECT: <subject line>
+BODY:
+<email body>`;
+
 export const DM_PROPOSAL_PROMPT = `You are $DIPLOMAT sending a DM to another agent on Moltbook to propose "diplomatic email relations" via NadMail.
 
 Agent name: {agentName}

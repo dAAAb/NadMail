@@ -744,41 +744,33 @@ export default function Dashboard() {
           transport: http('https://rpc.monad.xyz'),
         });
 
-        const balanceCalls = tokens.map((t: any) => ({
-          address: t.address as `0x${string}`,
-          abi: ERC20_BALANCE_ABI,
-          functionName: 'balanceOf' as const,
-          args: [auth.wallet as `0x${string}`],
-        }));
-
-        // Batch in chunks of 20 to avoid RPC limits
+        // Query balances individually (Monad may not have Multicall3)
         const holdings: { symbol: string; address: string; balance: string; isOwn: boolean; rawBalance: bigint }[] = [];
-        for (let i = 0; i < balanceCalls.length; i += 20) {
-          if (cancelled) return;
-          const chunk = balanceCalls.slice(i, i + 20);
+        const balancePromises = tokens.map(async (token: any) => {
           try {
-            const results = await client.multicall({ contracts: chunk });
-            results.forEach((r: any, j: number) => {
-              const token = tokens[i + j];
-              if (r.status === 'success' && r.result > 0n) {
-                const bal = r.result as bigint;
-                const formatted = parseFloat(formatUnits(bal, 18));
-                let balStr: string;
-                if (formatted >= 1_000_000) balStr = `${(formatted / 1_000_000).toFixed(1)}M`;
-                else if (formatted >= 1_000) balStr = `${(formatted / 1_000).toFixed(1)}K`;
-                else balStr = formatted.toFixed(2);
-
-                holdings.push({
-                  symbol: token.symbol,
-                  address: token.address,
-                  balance: balStr,
-                  isOwn: token.address === auth.token_address,
-                  rawBalance: bal,
-                });
-              }
-            });
+            const bal = await client.readContract({
+              address: token.address as `0x${string}`,
+              abi: ERC20_BALANCE_ABI,
+              functionName: 'balanceOf',
+              args: [auth.wallet as `0x${string}`],
+            }) as bigint;
+            if (bal > 0n) {
+              const formatted = parseFloat(formatUnits(bal, 18));
+              let balStr: string;
+              if (formatted >= 1_000_000) balStr = `${(formatted / 1_000_000).toFixed(1)}M`;
+              else if (formatted >= 1_000) balStr = `${(formatted / 1_000).toFixed(1)}K`;
+              else balStr = formatted.toFixed(2);
+              holdings.push({
+                symbol: token.symbol,
+                address: token.address,
+                balance: balStr,
+                isOwn: token.address === auth.token_address,
+                rawBalance: bal,
+              });
+            }
           } catch {}
-        }
+        });
+        await Promise.all(balancePromises);
 
         if (cancelled) return;
         // Sort: own token first, then by balance descending
@@ -808,12 +800,31 @@ export default function Dashboard() {
   }
 
   const primaryEmail = `${auth.handle}@nadmail.ai`;
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-nad-dark flex">
+    <div className="min-h-screen bg-nad-dark flex relative">
+      {/* Mobile sidebar toggle */}
+      <button
+        onClick={() => setSidebarOpen(!sidebarOpen)}
+        className="fixed top-4 left-4 z-50 md:hidden bg-nad-gray border border-gray-700 rounded-lg p-2 text-gray-400 hover:text-white transition"
+      >
+        {sidebarOpen ? '\u2715' : '\u2630'}
+      </button>
+
+      {/* Sidebar overlay (mobile) */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
+
       {/* Sidebar */}
-      <aside className="w-64 bg-nad-gray border-r border-gray-800 p-6 flex flex-col">
-        <Link to="/" className="flex items-center gap-2 mb-8">
+      <aside className={`
+        w-64 bg-nad-gray border-r border-gray-800 p-6 flex flex-col flex-shrink-0
+        fixed md:static inset-y-0 left-0 z-40
+        transform transition-transform duration-200 ease-in-out
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+      `}>
+        <Link to="/" className="flex items-center gap-2 mb-8" onClick={() => setSidebarOpen(false)}>
           <div className="w-8 h-8 bg-nad-purple rounded-lg flex items-center justify-center text-white font-bold text-sm">
             NM
           </div>
@@ -842,7 +853,7 @@ export default function Dashboard() {
           )}
         </div>
 
-        <nav className="flex-1 space-y-1">
+        <nav className="flex-1 space-y-1" onClick={() => setSidebarOpen(false)}>
           <NavLink to="/dashboard" icon="inbox" label="Inbox" active={location.pathname === '/dashboard'} />
           <NavLink to="/dashboard/sent" icon="send" label="Sent" active={location.pathname === '/dashboard/sent'} />
           <NavLink to="/dashboard/compose" icon="edit" label="Compose" active={location.pathname === '/dashboard/compose'} />
@@ -901,7 +912,7 @@ export default function Dashboard() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 p-8 overflow-y-auto">
+      <main className="flex-1 p-4 pt-14 md:p-8 md:pt-8 overflow-y-auto">
         {auth.handle?.startsWith('0x') && (
           <UpgradeBanner auth={auth} setAuth={setAuth} claimName={claimName} />
         )}

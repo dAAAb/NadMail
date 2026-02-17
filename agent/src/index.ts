@@ -21,6 +21,7 @@ import {
   EMAIL_REPLY_PROMPT,
   MOLTBOOK_POST_PROMPT,
   MOLTBOOK_COMMENT_PROMPT,
+  PROACTIVE_EMAIL_PROMPT,
 } from './personality.js';
 
 // ─── Config ─────────────────────────────────────
@@ -36,15 +37,20 @@ const POST_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours between posts
 const STATE_FILE = process.env.STATE_FILE || './diplomat-state.json';
 const MAX_REPLIES_PER_CYCLE = 5;
 const MAX_COMMENTS_PER_CYCLE = 3;
+const MAX_OUTREACH_PER_CYCLE = 2; // Proactive emails to other users
+const OUTREACH_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4 hours between outreach rounds
 
 // ─── State ──────────────────────────────────────
 
 interface AgentState {
   lastPostTime: number;
   lastCycleTime: number;
+  lastOutreachTime: number;
   repliedEmailIds: string[];
   commentedPostIds: string[];
+  contactedHandles: string[];
   totalEmailsReplied: number;
+  totalEmailsSent: number;
   totalPostsCreated: number;
   totalCommentsLeft: number;
   portfolio: string;
@@ -63,9 +69,12 @@ function loadState(): AgentState {
   return {
     lastPostTime: 0,
     lastCycleTime: 0,
+    lastOutreachTime: 0,
     repliedEmailIds: [],
     commentedPostIds: [],
+    contactedHandles: [],
     totalEmailsReplied: 0,
+    totalEmailsSent: 0,
     totalPostsCreated: 0,
     totalCommentsLeft: 0,
     portfolio: '',
@@ -80,6 +89,9 @@ function saveState(state: AgentState) {
   }
   if (state.commentedPostIds.length > 500) {
     state.commentedPostIds = state.commentedPostIds.slice(-500);
+  }
+  if (state.contactedHandles.length > 200) {
+    state.contactedHandles = state.contactedHandles.slice(-200);
   }
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
@@ -228,6 +240,96 @@ async function engageMoltbook(state: AgentState): Promise<{ posts: number; comme
   return { posts, comments };
 }
 
+// ─── Proactive Email Outreach ────────────────────
+
+async function proactiveOutreach(state: AgentState): Promise<number> {
+  let sent = 0;
+  const timeSinceLastOutreach = Date.now() - (state.lastOutreachTime || 0);
+  if (timeSinceLastOutreach < OUTREACH_COOLDOWN_MS) {
+    console.log(`  ⏳ Outreach cooldown (${Math.round((OUTREACH_COOLDOWN_MS - timeSinceLastOutreach) / 60000)}min remaining)`);
+    return 0;
+  }
+
+  try {
+    // Get all NadMail users with tokens
+    const res = await fetch(`${NADMAIL_API}/api/stats/tokens`);
+    if (!res.ok) return 0;
+    const { tokens } = await res.json() as { tokens: { handle: string; address: string; symbol: string }[] };
+
+    // Filter out: self, 0x handles, already contacted recently
+    const candidates = tokens.filter(t =>
+      t.handle !== 'diplomat' &&
+      t.handle !== 'nadmail' &&
+      !t.handle.startsWith('0x') &&
+      !state.contactedHandles.includes(t.handle)
+    );
+
+    if (candidates.length === 0) {
+      // Reset contacted list if we've reached everyone
+      state.contactedHandles = [];
+      console.log('  🔄 Reset outreach list — contacted everyone!');
+      return 0;
+    }
+
+    // Pick random candidates
+    const shuffled = candidates.sort(() => Math.random() - 0.5);
+    const targets = shuffled.slice(0, MAX_OUTREACH_PER_CYCLE);
+
+    for (const target of targets) {
+      try {
+        // Get context about the recipient
+        const identity = await nadmail.lookupIdentity(target.handle);
+        const tokenInfo = identity?.token_symbol ? `$${identity.token_symbol}` : 'their token';
+
+        const context = [
+          `They registered as ${target.handle}@nadmail.ai`,
+          identity?.token_symbol ? `Their meme coin is $${identity.token_symbol}` : '',
+          `There are ${tokens.length} registered agents on NadMail`,
+        ].filter(Boolean).join('. ');
+
+        const prompt = PROACTIVE_EMAIL_PROMPT
+          .replace('{recipient}', target.handle)
+          .replace('{recipientToken}', identity?.token_symbol ? `$${identity.token_symbol}` : 'unknown')
+          .replace('{context}', context);
+
+        const response = await claude.generate(SYSTEM_PROMPT, prompt);
+
+        // Parse SUBJECT: and BODY: from response
+        const subjectMatch = response.match(/SUBJECT:\s*(.+?)(?:\n|$)/);
+        const bodyMatch = response.match(/BODY:\s*([\s\S]+)/);
+
+        const subject = subjectMatch?.[1]?.trim() || `Diplomatic Greetings, ${target.handle}! 🏛️`;
+        const body = bodyMatch?.[1]?.trim() || response;
+
+        const result = await nadmail.sendEmail(
+          `${target.handle}@nadmail.ai`,
+          subject,
+          body,
+        );
+
+        state.contactedHandles.push(target.handle);
+        state.totalEmailsSent = (state.totalEmailsSent || 0) + 1;
+        sent++;
+
+        console.log(`  📨 Outreach to ${target.handle}@nadmail.ai${result.microbuy_tx ? ` (micro-buy!)` : ''}`);
+
+        // Rate limit between emails
+        await sleep(5_000);
+      } catch (e) {
+        console.error(`  ❌ Outreach to ${target.handle} failed:`, (e as Error).message);
+      }
+    }
+
+    if (sent > 0) {
+      state.lastOutreachTime = Date.now();
+    }
+  } catch (e) {
+    console.error('  ❌ Proactive outreach failed:', (e as Error).message);
+  }
+
+  return sent;
+}
+
 // ─── Main Loop ──────────────────────────────────
 
 function sleep(ms: number): Promise<void> {
@@ -243,7 +345,11 @@ async function runCycle(state: AgentState) {
   console.log('\n📧 Checking NadMail inbox...');
   const emailsReplied = await processEmails(state);
 
-  // 2. Engage Moltbook
+  // 2. Proactive email outreach
+  console.log('\n📨 Proactive outreach...');
+  const emailsSent = await proactiveOutreach(state);
+
+  // 3. Engage Moltbook
   if (MOLTBOOK_API_KEY) {
     console.log('\n📱 Engaging Moltbook...');
     const { posts, comments } = await engageMoltbook(state);
@@ -252,13 +358,13 @@ async function runCycle(state: AgentState) {
     console.log('\n📱 Moltbook: skipped (no API key)');
   }
 
-  // 3. Summary
+  // 4. Summary
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   state.lastCycleTime = Date.now();
   saveState(state);
 
-  console.log(`\n✅ Cycle complete in ${elapsed}s — ${emailsReplied} emails replied`);
-  console.log(`📊 Totals: ${state.totalEmailsReplied} emails, ${state.totalPostsCreated} posts, ${state.totalCommentsLeft} comments`);
+  console.log(`\n✅ Cycle complete in ${elapsed}s — ${emailsReplied} replied, ${emailsSent} outreach`);
+  console.log(`📊 Totals: ${state.totalEmailsReplied} replies, ${state.totalEmailsSent || 0} sent, ${state.totalPostsCreated} posts, ${state.totalCommentsLeft} comments`);
   console.log(`🗂️ Portfolio: ${trading.getPortfolio().length} token relations`);
 }
 
