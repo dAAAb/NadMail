@@ -24,7 +24,7 @@ export function buildTextSignatureWithPrice(mb: MicroBuyResult, emoAmount?: numb
   }
   return `\n\n--\n` +
     `This email just micro-bought $${mb.tokenSymbol} tokens!\n` +
-    `   ${mb.totalMonSpent} MON → ${mb.tokensBought} $${mb.tokenSymbol} (${NADFUN_BASE}/${mb.tokenAddress})\n` +
+    `   ${mb.totalMonSpent} MON → ${mb.tokensBought} $${mb.tokenSymbol}\n` +
     `   Price: ${mb.priceBeforeMon} → ${mb.priceAfterMon} MON (${mb.priceChangePercent}%)\n\n` +
     `Sent via NadMail.ai -- Your Email is Your Meme Coin\nhttps://nadmail.ai`;
 }
@@ -56,7 +56,7 @@ export function buildHtmlSignatureWithPrice(mb: MicroBuyResult, emoAmount?: numb
 function buildTextSignatureWithEmo(mb: MicroBuyResult, emoAmount: number): string {
   return `\n\n--\n` +
     `🔥 This email EMO-BOOSTED $${mb.tokenSymbol} with ${mb.totalMonSpent} MON!\n` +
-    `   Base: 0.001 + Boost: ${emoAmount} MON → ${mb.tokensBought} $${mb.tokenSymbol} (${NADFUN_BASE}/${mb.tokenAddress})\n` +
+    `   Base: 0.001 + Boost: ${emoAmount} MON → ${mb.tokensBought} $${mb.tokenSymbol}\n` +
     `   Price: ${mb.priceBeforeMon} → ${mb.priceAfterMon} MON (${mb.priceChangePercent}%)\n\n` +
     `Sent via NadMail.ai -- Your Email is Your Meme Coin\nhttps://nadmail.ai`;
 }
