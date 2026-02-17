@@ -1813,13 +1813,31 @@ function EmailDetail({ auth }: { auth: AuthState }) {
           </div>
         </div>
         <div className="whitespace-pre-wrap text-gray-300 font-mono text-sm leading-relaxed"
-          dangerouslySetInnerHTML={{ __html: bodyText
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            .replace(/(https?:\/\/[^\s)<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:#7B3FE4;text-decoration:underline;">$1</a>')
-            .replace(/\$([A-Z0-9_]{2,})/g, (m, sym) => {
-              // Try to link $TOKEN to nad.fun if followed by a nad.fun URL in parentheses
+          dangerouslySetInnerHTML={{ __html: (() => {
+            let html = bodyText
+              .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            // Build token→address map from nad.fun URLs in the text
+            const tokenUrls: Record<string, string> = {};
+            const nadfunRe = /nad\.fun\/tokens\/(0x[a-fA-F0-9]+)/g;
+            let urlMatch;
+            while ((urlMatch = nadfunRe.exec(html)) !== null) {
+              tokenUrls[urlMatch[1].toLowerCase()] = `https://nad.fun/tokens/${urlMatch[1]}`;
+            }
+            // Also map from tokenHoldings if available
+            tokenHoldings.forEach(t => { tokenUrls[t.symbol.toLowerCase()] = `https://nad.fun/tokens/${t.address}`; });
+            // Linkify $TOKEN — match to nad.fun URL
+            html = html.replace(/\$([A-Z0-9_]{2,})/g, (m, sym) => {
+              const url = tokenUrls[sym.toLowerCase()];
+              if (url) return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:#7B3FE4;font-weight:bold;text-decoration:none;">${m}</a>`;
               return `<span style="color:#7B3FE4;font-weight:bold;">${m}</span>`;
-            })
+            });
+            // Linkify remaining URLs
+            html = html.replace(/(https?:\/\/[^\s)<"]+)/g, (url) => {
+              if (url.includes('style=')) return url; // skip already-linked
+              return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:#7B3FE4;text-decoration:underline;">${url}</a>`;
+            });
+            return html;
+          })()
           }}
         />
       </div>
