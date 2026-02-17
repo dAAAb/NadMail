@@ -22,6 +22,7 @@ import {
   MOLTBOOK_POST_PROMPT,
   MOLTBOOK_COMMENT_PROMPT,
   PROACTIVE_EMAIL_PROMPT,
+  INTRODUCTION_EMAIL_PROMPT,
 } from './personality.js';
 
 // ─── Config ─────────────────────────────────────
@@ -35,7 +36,6 @@ const MOLTBOOK_AGENT_ID = process.env.MOLTBOOK_AGENT_ID || '';
 const CYCLE_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const POST_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours between posts
 const STATE_FILE = process.env.STATE_FILE || './diplomat-state.json';
-const MAX_REPLIES_PER_CYCLE = 5;
 const MAX_COMMENTS_PER_CYCLE = 3;
 const MAX_OUTREACH_PER_CYCLE = 2; // Proactive emails to other users
 const OUTREACH_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4 hours between outreach rounds
@@ -96,15 +96,36 @@ function saveState(state: AgentState) {
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
+// ─── Helpers ────────────────────────────────────
+
+const EMO_LEVELS: Record<string, number> = {
+  friendly: 0.01,
+  bullish: 0.025,
+  super: 0.05,
+  moon: 0.075,
+  wagmi: 0.1,
+};
+
+function parseEmoFromReply(text: string): { body: string; emoAmount: number } {
+  const emoMatch = text.match(/\nEMO:\s*(friendly|bullish|super|moon|wagmi)\s*$/i);
+  if (emoMatch) {
+    const level = emoMatch[1].toLowerCase();
+    const body = text.replace(emoMatch[0], '').trim();
+    return { body, emoAmount: EMO_LEVELS[level] || 0 };
+  }
+  return { body: text, emoAmount: 0 };
+}
+
 // ─── Email Processing ───────────────────────────
 
 async function processEmails(state: AgentState): Promise<number> {
   let replied = 0;
   try {
     const unread = await nadmail.getUnreadEmails();
-    console.log(`  📧 ${unread.length} unread emails`);
+    console.log(`  📧 ${unread.length} unread emails — replying to ALL (diplomatic protocol)`);
 
-    for (const email of unread.slice(0, MAX_REPLIES_PER_CYCLE)) {
+    // Reply to ALL unread emails — it's diplomatic protocol!
+    for (const email of unread) {
       if (state.repliedEmailIds.includes(email.id)) continue;
 
       try {
@@ -130,23 +151,27 @@ async function processEmails(state: AgentState): Promise<number> {
         );
 
         // Generate reply with Claude
-        const reply = await claude.generateEmailReply(SYSTEM_PROMPT, EMAIL_REPLY_PROMPT, {
+        const rawReply = await claude.generateEmailReply(SYSTEM_PROMPT, EMAIL_REPLY_PROMPT, {
           sender: email.from_addr,
           senderToken,
           subject: full.subject || '(no subject)',
           body: full.body || email.snippet || '',
         });
 
+        // Parse EMO level from reply
+        const { body: reply, emoAmount } = parseEmoFromReply(rawReply);
+
         // Send reply (this triggers micro-buy of sender's token!)
         const replySubject = full.subject?.startsWith('Re:')
           ? full.subject
           : `Re: ${full.subject || '(no subject)'}`;
-        const result = await nadmail.sendEmail(email.from_addr, replySubject, reply);
+        const result = await nadmail.sendEmail(email.from_addr, replySubject, reply, emoAmount);
 
         trading.recordInteraction(senderHandle, 'sent');
 
+        const emoLabel = emoAmount > 0 ? ` emo:${emoAmount} MON` : '';
         console.log(
-          `  ✉️ Replied to ${email.from_addr}${result.microbuy_tx ? ` (micro-buy: ${result.microbuy_tx.slice(0, 10)}...)` : ''}`,
+          `  ✉️ Replied to ${email.from_addr}${emoLabel}${result.microbuy_tx ? ` 💰` : ''}`,
         );
 
         state.repliedEmailIds.push(email.id);
@@ -242,6 +267,19 @@ async function engageMoltbook(state: AgentState): Promise<{ posts: number; comme
 
 // ─── Proactive Email Outreach ────────────────────
 
+/** Parse SUBJECT/BODY/EMO from Claude's structured response */
+function parseEmailResponse(response: string, fallbackRecipient: string) {
+  const subjectMatch = response.match(/SUBJECT:\s*(.+?)(?:\n|$)/);
+  const bodyMatch = response.match(/BODY:\s*([\s\S]+?)(?:\nEMO:|$)/);
+  const emoMatch = response.match(/EMO:\s*(friendly|bullish|super|moon|wagmi)\s*$/i);
+
+  const subject = subjectMatch?.[1]?.trim() || `Diplomatic Greetings, ${fallbackRecipient}! 🏛️`;
+  let body = bodyMatch?.[1]?.trim() || response.replace(/SUBJECT:.*\n/, '').replace(/EMO:.*$/, '').trim();
+  const emoAmount = emoMatch ? (EMO_LEVELS[emoMatch[1].toLowerCase()] || 0) : 0;
+
+  return { subject, body, emoAmount };
+}
+
 async function proactiveOutreach(state: AgentState): Promise<number> {
   let sent = 0;
   const timeSinceLastOutreach = Date.now() - (state.lastOutreachTime || 0);
@@ -265,58 +303,89 @@ async function proactiveOutreach(state: AgentState): Promise<number> {
     );
 
     if (candidates.length === 0) {
-      // Reset contacted list if we've reached everyone
       state.contactedHandles = [];
       console.log('  🔄 Reset outreach list — contacted everyone!');
       return 0;
     }
 
-    // Pick random candidates
+    // Shuffle candidates
     const shuffled = candidates.sort(() => Math.random() - 0.5);
-    const targets = shuffled.slice(0, MAX_OUTREACH_PER_CYCLE);
 
-    for (const target of targets) {
-      try {
-        // Get context about the recipient
-        const identity = await nadmail.lookupIdentity(target.handle);
-        const tokenInfo = identity?.token_symbol ? `$${identity.token_symbol}` : 'their token';
+    // ── Decide: introduction (30% chance) or direct outreach ──
+    const doIntroduction = shuffled.length >= 2 && Math.random() < 0.3;
 
-        const context = [
-          `They registered as ${target.handle}@nadmail.ai`,
-          identity?.token_symbol ? `Their meme coin is $${identity.token_symbol}` : '',
-          `There are ${tokens.length} registered agents on NadMail`,
-        ].filter(Boolean).join('. ');
+    if (doIntroduction) {
+      // Pick two users and introduce them to each other
+      const [userA, userB] = shuffled.slice(0, 2);
+      console.log(`  🤝 Matchmaking: ${userA.handle} ↔ ${userB.handle}`);
 
-        const prompt = PROACTIVE_EMAIL_PROMPT
-          .replace('{recipient}', target.handle)
-          .replace('{recipientToken}', identity?.token_symbol ? `$${identity.token_symbol}` : 'unknown')
-          .replace('{context}', context);
+      for (const [recipient, other] of [[userA, userB], [userB, userA]] as const) {
+        try {
+          const context = [
+            `${other.handle}.nad is a fellow NadMail citizen`,
+            other.symbol ? `Their token is $${other.symbol}` : '',
+            `The NadMail community has ${tokens.length} members`,
+          ].filter(Boolean).join('. ');
 
-        const response = await claude.generate(SYSTEM_PROMPT, prompt);
+          const prompt = INTRODUCTION_EMAIL_PROMPT
+            .replace('{recipient}', recipient.handle)
+            .replace('{recipientToken}', recipient.symbol ? `$${recipient.symbol}` : 'unknown')
+            .replace('{otherHandle}', other.handle)
+            .replace('{otherToken}', other.symbol ? `$${other.symbol}` : 'unknown')
+            .replace('{context}', context);
 
-        // Parse SUBJECT: and BODY: from response
-        const subjectMatch = response.match(/SUBJECT:\s*(.+?)(?:\n|$)/);
-        const bodyMatch = response.match(/BODY:\s*([\s\S]+)/);
+          const response = await claude.generate(SYSTEM_PROMPT, prompt);
+          const { subject, body, emoAmount } = parseEmailResponse(response, recipient.handle);
 
-        const subject = subjectMatch?.[1]?.trim() || `Diplomatic Greetings, ${target.handle}! 🏛️`;
-        const body = bodyMatch?.[1]?.trim() || response;
+          const result = await nadmail.sendEmail(
+            `${recipient.handle}@nadmail.ai`, subject, body, emoAmount,
+          );
 
-        const result = await nadmail.sendEmail(
-          `${target.handle}@nadmail.ai`,
-          subject,
-          body,
-        );
+          state.contactedHandles.push(recipient.handle);
+          state.totalEmailsSent = (state.totalEmailsSent || 0) + 1;
+          sent++;
 
-        state.contactedHandles.push(target.handle);
-        state.totalEmailsSent = (state.totalEmailsSent || 0) + 1;
-        sent++;
+          console.log(`  📨 Intro to ${recipient.handle} (about ${other.handle})${result.microbuy_tx ? ' 💰' : ''}`);
+          await sleep(5_000);
+        } catch (e) {
+          console.error(`  ❌ Intro to ${recipient.handle} failed:`, (e as Error).message);
+        }
+      }
+    } else {
+      // Direct outreach to 1-2 users
+      const targets = shuffled.slice(0, MAX_OUTREACH_PER_CYCLE);
 
-        console.log(`  📨 Outreach to ${target.handle}@nadmail.ai${result.microbuy_tx ? ` (micro-buy!)` : ''}`);
+      for (const target of targets) {
+        try {
+          const identity = await nadmail.lookupIdentity(target.handle);
 
-        // Rate limit between emails
-        await sleep(5_000);
-      } catch (e) {
-        console.error(`  ❌ Outreach to ${target.handle} failed:`, (e as Error).message);
+          const context = [
+            `They registered as ${target.handle}@nadmail.ai`,
+            identity?.token_symbol ? `Their meme coin is $${identity.token_symbol}` : '',
+            `There are ${tokens.length} members in the NadMail pen-pal community`,
+          ].filter(Boolean).join('. ');
+
+          const prompt = PROACTIVE_EMAIL_PROMPT
+            .replace('{recipient}', target.handle)
+            .replace('{recipientToken}', identity?.token_symbol ? `$${identity.token_symbol}` : 'unknown')
+            .replace('{context}', context);
+
+          const response = await claude.generate(SYSTEM_PROMPT, prompt);
+          const { subject, body, emoAmount } = parseEmailResponse(response, target.handle);
+
+          const result = await nadmail.sendEmail(
+            `${target.handle}@nadmail.ai`, subject, body, emoAmount,
+          );
+
+          state.contactedHandles.push(target.handle);
+          state.totalEmailsSent = (state.totalEmailsSent || 0) + 1;
+          sent++;
+
+          console.log(`  📨 Outreach to ${target.handle}${result.microbuy_tx ? ' 💰' : ''}`);
+          await sleep(5_000);
+        } catch (e) {
+          console.error(`  ❌ Outreach to ${target.handle} failed:`, (e as Error).message);
+        }
       }
     }
 

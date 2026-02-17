@@ -81,11 +81,15 @@ export async function markRead(_id: string): Promise<void> {
   // Auto-marked when getEmail() is called
 }
 
-/** Send an email */
-export async function sendEmail(to: string, subject: string, body: string): Promise<{ success: boolean; microbuy_tx?: string }> {
+/** Send an email (with optional emo-boost amount) */
+export async function sendEmail(to: string, subject: string, body: string, emoAmount?: number): Promise<{ success: boolean; microbuy_tx?: string }> {
+  const payload: Record<string, unknown> = { to, subject, body };
+  if (emoAmount && emoAmount > 0) {
+    payload.emo_amount = emoAmount;
+  }
   const res = await apiFetch('/api/send', {
     method: 'POST',
-    body: JSON.stringify({ to, subject, body }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const err = await res.json() as { error: string };
