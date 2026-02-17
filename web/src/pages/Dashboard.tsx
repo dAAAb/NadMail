@@ -1816,24 +1816,29 @@ function EmailDetail({ auth }: { auth: AuthState }) {
           dangerouslySetInnerHTML={{ __html: (() => {
             let html = bodyText
               .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            // Build token→address map from nad.fun URLs in the text
+            // Build token→address map from nad.fun URLs found in this email
             const tokenUrls: Record<string, string> = {};
             const nadfunRe = /nad\.fun\/tokens\/(0x[a-fA-F0-9]+)/g;
             let urlMatch;
-            while ((urlMatch = nadfunRe.exec(html)) !== null) {
+            while ((urlMatch = nadfunRe.exec(bodyText)) !== null) {
               tokenUrls[urlMatch[1].toLowerCase()] = `https://nad.fun/tokens/${urlMatch[1]}`;
             }
-            // Also map from tokenHoldings if available
-            tokenHoldings.forEach(t => { tokenUrls[t.symbol.toLowerCase()] = `https://nad.fun/tokens/${t.address}`; });
-            // Linkify $TOKEN — match to nad.fun URL
+            // Map $TOKEN symbols to addresses by finding patterns like "$SYM ... nad.fun/tokens/0x..."
+            const tokenSymRe = /\$([A-Z0-9_]{2,})/g;
+            const allAddrs = Object.values(tokenUrls);
+            let symMatch;
+            const symToUrl: Record<string, string> = {};
+            while ((symMatch = tokenSymRe.exec(bodyText)) !== null) {
+              if (allAddrs.length === 1) symToUrl[symMatch[1].toLowerCase()] = allAddrs[0];
+            }
+            // Linkify $TOKEN names
             html = html.replace(/\$([A-Z0-9_]{2,})/g, (m, sym) => {
-              const url = tokenUrls[sym.toLowerCase()];
+              const url = symToUrl[sym.toLowerCase()] || (allAddrs.length === 1 ? allAddrs[0] : '');
               if (url) return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:#7B3FE4;font-weight:bold;text-decoration:none;">${m}</a>`;
               return `<span style="color:#7B3FE4;font-weight:bold;">${m}</span>`;
             });
-            // Linkify remaining URLs
-            html = html.replace(/(https?:\/\/[^\s)<"]+)/g, (url) => {
-              if (url.includes('style=')) return url; // skip already-linked
+            // Linkify remaining URLs (skip ones already inside href="...")
+            html = html.replace(/(?<!href="|">)(https?:\/\/[^\s)<"]+)/g, (url) => {
               return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:#7B3FE4;text-decoration:underline;">${url}</a>`;
             });
             return html;
