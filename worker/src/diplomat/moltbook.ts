@@ -41,10 +41,10 @@ async function apiFetch(config: MoltbookConfig, path: string, options?: RequestI
   });
 }
 
-export async function createPost(config: MoltbookConfig, title: string, content: string, submolt_name = 'general'): Promise<Post> {
+export async function createPost(config: MoltbookConfig, title: string, content: string, submolt = 'general'): Promise<Post> {
   const res = await apiFetch(config, '/api/v1/posts', {
     method: 'POST',
-    body: JSON.stringify({ title, content, submolt_name }),
+    body: JSON.stringify({ title, content, submolt }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({})) as { error?: string; message?: string | string[] };
@@ -53,10 +53,11 @@ export async function createPost(config: MoltbookConfig, title: string, content:
   }
   const data = await res.json() as any;
   // Handle verification challenge (Moltbook anti-spam)
-  if (data.post?.verification?.challenge_text) {
+  const verif = data.post?.verification || data.verification;
+  if (verif?.challenge) {
     try {
-      const challenge = data.post.verification.challenge_text;
-      const code = data.post.verification.verification_code;
+      const challenge = verif.challenge;
+      const code = verif.code || verif.verification_code;
       // Extract numbers and operation from the obfuscated challenge
       const nums = challenge.match(/[\d.]+/g)?.map(Number) || [];
       const hasAdd = /aDd|pLuS|ToTaL/i.test(challenge);

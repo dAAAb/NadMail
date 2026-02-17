@@ -44,7 +44,7 @@ id = "efe4fa7828fb4c839f4abcbe019f496a"
 
 # Cron Trigger — $DIPLOMAT agent 每 30 分鐘跑一次
 [triggers]
-crons = ["*/30 * * * *"]
+crons = ["0 */3 * * *"]
 
 # Email 寄信 binding（不限制目的地，由程式碼控制）
 [[send_email]]
