@@ -68,7 +68,7 @@ async function apiFetch(path: string, options?: RequestInit): Promise<Response> 
 }
 
 /** Create a post */
-export async function createPost(title: string, content: string, submolt = 'm/general'): Promise<Post> {
+export async function createPost(title: string, content: string, submolt = 'general'): Promise<Post> {
   const res = await apiFetch('/api/v1/posts', {
     method: 'POST',
     body: JSON.stringify({ title, content, submolt }),
