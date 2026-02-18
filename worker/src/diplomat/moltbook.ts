@@ -44,7 +44,7 @@ async function apiFetch(config: MoltbookConfig, path: string, options?: RequestI
 export async function createPost(config: MoltbookConfig, title: string, content: string, submolt = 'general'): Promise<Post> {
   const res = await apiFetch(config, '/api/v1/posts', {
     method: 'POST',
-    body: JSON.stringify({ title, content, submolt }),
+    body: JSON.stringify({ title, content, submolt_name: submolt }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({})) as { error?: string; message?: string | string[] };

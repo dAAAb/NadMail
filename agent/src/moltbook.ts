@@ -71,7 +71,7 @@ async function apiFetch(path: string, options?: RequestInit): Promise<Response> 
 export async function createPost(title: string, content: string, submolt = 'general'): Promise<Post> {
   const res = await apiFetch('/api/v1/posts', {
     method: 'POST',
-    body: JSON.stringify({ title, content, submolt }),
+    body: JSON.stringify({ title, content, submolt_name: submolt }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({})) as { error?: string };
