@@ -44,16 +44,55 @@ export async function transferNadName(
 ): Promise<string> {
   if (!env.WALLET_PRIVATE_KEY) throw new Error('Worker wallet not configured');
 
-  // Look up tokenId from DB
+  // Look up tokenId — first try DB (free pool), then on-chain enumeration
+  let tokenId: bigint | null = null;
+
   const row = await env.DB.prepare(
     'SELECT token_id FROM free_nad_names WHERE name = ?'
   ).bind(nadName).first<{ token_id: number | null }>();
 
-  if (!row || row.token_id === null) {
-    throw new Error(`No tokenId found for ${nadName}.nad — check free_nad_names table`);
+  if (row && row.token_id !== null) {
+    tokenId = BigInt(row.token_id);
+  } else {
+    // Not in free pool — find tokenId by enumerating Worker's NFTs on-chain
+    const publicClient = createPublicClient({
+      chain: monad,
+      transport: http(env.MONAD_RPC_URL),
+    });
+    const workerAddr = privateKeyToAccount(env.WALLET_PRIVATE_KEY as Hex).address;
+    const balance = Number(await publicClient.readContract({
+      address: NNS_CONTRACT,
+      abi: [{ inputs: [{ name: 'owner', type: 'address' }], name: 'balanceOf', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' }] as const,
+      functionName: 'balanceOf',
+      args: [workerAddr],
+    }));
+
+    for (let i = 0; i < balance; i++) {
+      const tid = await publicClient.readContract({
+        address: NNS_CONTRACT,
+        abi: [{ inputs: [{ name: 'owner', type: 'address' }, { name: 'index', type: 'uint256' }], name: 'tokenOfOwnerByIndex', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' }] as const,
+        functionName: 'tokenOfOwnerByIndex',
+        args: [workerAddr, BigInt(i)],
+      });
+      const uri = await publicClient.readContract({
+        address: NNS_CONTRACT,
+        abi: [{ inputs: [{ name: 'tokenId', type: 'uint256' }], name: 'tokenURI', outputs: [{ name: '', type: 'string' }], stateMutability: 'view', type: 'function' }] as const,
+        functionName: 'tokenURI',
+        args: [tid],
+      });
+      const b64 = uri.split('/').pop() || '';
+      const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+      const name = atob(padded).replace(/\.nad$/, '');
+      if (name.toLowerCase() === nadName.toLowerCase()) {
+        tokenId = tid;
+        break;
+      }
+    }
   }
 
-  const tokenId = BigInt(row.token_id);
+  if (tokenId === null) {
+    throw new Error(`No tokenId found for ${nadName}.nad — not in free pool or Worker wallet`);
+  }
   const account = privateKeyToAccount(env.WALLET_PRIVATE_KEY as Hex);
 
   const walletClient = createWalletClient({
