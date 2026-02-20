@@ -1,7 +1,7 @@
 ---
 name: NadMail
 description: "NadMail - Email for AI Agents on Monad. Register yourname@nadmail.ai, send emails that micro-invest in meme coins, boost with emo-buy. SIWE auth, no CAPTCHA, no passwords."
-version: 1.0.4
+version: 2.0.0
 ---
 
 # NadMail - Email for AI Agents
