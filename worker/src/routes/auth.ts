@@ -106,6 +106,101 @@ authRoutes.post('/agent-register', async (c) => {
       } catch { /* non-critical */ }
     }
 
+    // Check if .nad is missing and auto_nad requested — buy it now
+    let nad_name_status: string | undefined = undefined;
+    let nad_purchase_tx: string | null = null;
+    let purchase_hint: object | undefined = undefined;
+
+    // Check current nad_name in DB
+    const accountFull = await c.env.DB.prepare(
+      'SELECT nad_name FROM accounts WHERE wallet = ?'
+    ).bind(wallet).first<{ nad_name: string | null }>();
+
+    // Verify on-chain ownership
+    const currentNadName = accountFull?.nad_name;
+    const handleForNad = existingAccount.handle;
+    const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
+
+    if (currentNadName) {
+      // DB says has nad_name — verify on chain
+      const ownedNames = await getNadNamesForWallet(wallet, rpcUrl).catch(() => [] as string[]);
+      const ownsIt = ownedNames.some(n => n.toLowerCase() === handleForNad.toLowerCase());
+      if (ownsIt) {
+        nad_name_status = 'owned';
+      } else {
+        // DB is wrong — fix it
+        nad_name_status = 'not_purchased';
+        await c.env.DB.prepare('UPDATE accounts SET nad_name = NULL WHERE wallet = ?').bind(wallet).run();
+      }
+    }
+
+    // If no .nad on-chain and auto_nad requested, buy it
+    if (nad_name_status !== 'owned' && auto_nad && !/^0x/i.test(handleForNad)) {
+      try {
+        const { createPublicClient: createPC, http: httpTransport } = await import('viem');
+        const client = createPC({
+          chain: { id: 143, name: 'Monad', nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } } as any,
+          transport: httpTransport(rpcUrl),
+        });
+
+        // Check availability
+        const isAvailable = await client.readContract({
+          address: '0xCc7a1bfF8845573dbF0B3b96e25B9b549d4a2eC7' as `0x${string}`,
+          abi: [{ inputs: [{ name: 'name', type: 'string' }], name: 'isNameAvailable', outputs: [{ name: '', type: 'bool' }], stateMutability: 'view', type: 'function' }] as const,
+          functionName: 'isNameAvailable',
+          args: [handleForNad],
+        });
+
+        if (isAvailable) {
+          // Get price
+          const priceResult = await client.readContract({
+            address: '0xdF0e18bb6d8c5385d285C3c67919E99c0dce020d' as `0x${string}`,
+            abi: [{ inputs: [{ name: 'name', type: 'string' }, { name: 'token', type: 'address' }], name: 'getRegisteringPriceInToken', outputs: [{ components: [{ name: 'base', type: 'uint256' }, { name: 'token', type: 'address' }, { name: 'decimals', type: 'uint8' }], type: 'tuple' }], stateMutability: 'view', type: 'function' }] as const,
+            functionName: 'getRegisteringPriceInToken',
+            args: [handleForNad, '0x0000000000000000000000000000000000000000' as `0x${string}`],
+          });
+
+          const priceWei = (priceResult as any).base as bigint;
+          console.log(`[agent-register] Existing account auto-buy: ${handleForNad}.nad, price: ${priceWei} wei`);
+
+          const purchaseResult = await executeNnsPurchase(handleForNad, wallet, priceWei, c.env);
+          nad_purchase_tx = purchaseResult.txHash;
+          nad_name_status = 'owned';
+
+          // Update DB with real nad_name
+          await c.env.DB.prepare('UPDATE accounts SET nad_name = ? WHERE wallet = ?')
+            .bind(`${handleForNad}.nad`, wallet).run();
+
+          console.log(`[agent-register] Auto-buy success for existing account: ${handleForNad}.nad → ${wallet}`);
+        } else {
+          nad_name_status = 'not_purchased';
+          purchase_hint = {
+            message: `${handleForNad}.nad is already taken on NNS by someone else.`,
+          };
+        }
+      } catch (e: any) {
+        console.log(`[agent-register] Auto-buy failed for existing account ${handleForNad}: ${e.message}`);
+        nad_name_status = 'not_purchased';
+        purchase_hint = {
+          message: `Auto-buy failed: ${e.message}`,
+          options: [
+            { action: 'proxy_buy', method: 'POST /api/register/buy-nad-name', description: 'We buy it for you (send MON to cover cost)' },
+            { action: 'buy_direct', url: 'https://app.nad.domains/', description: 'Buy directly, then POST /api/register/upgrade-handle' },
+          ],
+        };
+      }
+    } else if (nad_name_status !== 'owned' && !/^0x/i.test(handleForNad)) {
+      nad_name_status = 'not_purchased';
+      purchase_hint = {
+        message: `Purchase ${handleForNad}.nad to own your name on-chain.`,
+        options: [
+          { action: 'auto_nad', method: 'POST /api/auth/agent-register', body: { auto_nad: true }, description: 'Re-call agent-register with auto_nad: true' },
+          { action: 'proxy_buy', method: 'POST /api/register/buy-nad-name', description: 'We buy it for you (send MON to cover cost)' },
+          { action: 'buy_direct', url: 'https://app.nad.domains/', description: 'Buy directly, then POST /api/register/upgrade-handle' },
+        ],
+      };
+    }
+
     const token = await createToken({ wallet, handle: existingAccount.handle }, secret);
 
     // Phase 3: If user has 0x handle AND owns exactly one .nad name, offer auto_upgrade
@@ -123,6 +218,9 @@ authRoutes.post('/agent-register', async (c) => {
       new_account: false,
       upgrade_available,
       auto_upgrade_available,
+      nad_name_status,
+      nad_purchase_tx,
+      purchase_hint,
       owned_nad_names: upgrade_available ? owned_nad_names : undefined,
       upgrade_hint: upgrade_available
         ? auto_upgrade_available
