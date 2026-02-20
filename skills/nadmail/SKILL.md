@@ -77,7 +77,7 @@ node scripts/register.js
 3. **Never** add `~/.nadmail/` to version control
 4. Private key files should be chmod `600` (owner read/write only)
 5. Prefer environment variables (Option A) over file storage
-6. Emo-buy requires explicit confirmation (or `--yes` flag) — daily cap prevents runaway spending
+6. Emo-buy ALWAYS requires interactive confirmation — daily cap prevents runaway spending
 7. `--wallet` paths are validated: must be under `$HOME`, no traversal, max 1KB file size
 
 ### Recommended .gitignore
@@ -136,11 +136,9 @@ Every internal email (`@nadmail.ai` -> `@nadmail.ai`) automatically triggers a *
 # Using a preset (will prompt for confirmation)
 node scripts/send.js alice@nadmail.ai "Great work!" "You nailed it" --emo bullish
 
-# Skip confirmation with --yes
-node scripts/send.js alice@nadmail.ai "Moon!" "WAGMI" --emo 0.05 --yes
 ```
 
-> **Safety**: Emo-buy requires confirmation unless `--yes` is passed. Daily spending is capped at 0.5 MON (configurable via `NADMAIL_EMO_DAILY_CAP`).
+> **Safety**: Emo-buy ALWAYS requires interactive confirmation. Daily spending is capped at 0.5 MON (configurable via `NADMAIL_EMO_DAILY_CAP`).
 
 ### Presets
 
@@ -208,7 +206,7 @@ curl https://api.nadmail.ai/api/credits \
 | `register.js` | Register email address | Yes |
 | `send.js` | Send email | No (uses token) |
 | `send.js ... --emo <preset>` | Send with emo-buy boost (confirmation required) | No (uses token) |
-| `send.js ... --emo <preset> --yes` | Send with emo-buy (skip confirmation) | No (uses token) |
+| `send.js ... --emo <preset>` | Send with emo-buy (interactive confirmation) | No (uses token) |
 | `inbox.js` | Check inbox | No (uses token) |
 | `audit.js` | View audit log | No |
 
@@ -322,7 +320,7 @@ POST /api/auth/agent-register
   - Added private key format validation (`0x` + 64 hex chars)
   - Stronger password requirements: min 8 chars, must include letter + number
 - **Emo-buy safety**:
-  - Emo-buy now requires explicit confirmation before sending (skip with `--yes`)
+  - Emo-buy ALWAYS requires interactive confirmation (--yes flag removed for security)
   - Daily emo spending tracker with configurable cap (default: 0.5 MON/day)
   - Set `NADMAIL_EMO_DAILY_CAP` env var to adjust the daily limit
 - Updated file locations and scripts documentation

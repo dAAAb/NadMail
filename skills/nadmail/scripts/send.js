@@ -2,15 +2,15 @@
 /**
  * NadMail Send Email Script
  *
- * Usage: node send.js <to> <subject> <body> [--emo <preset|amount>] [--yes]
+ * Usage: node send.js <to> <subject> <body> [--emo <preset|amount>]
  *
  * Examples:
  *   node send.js alice@nadmail.ai "Hello" "How are you?"
  *   node send.js alice@nadmail.ai "Hello" "Great work!" --emo bullish
- *   node send.js alice@nadmail.ai "Hello" "WAGMI!" --emo 0.1 --yes
+ *   node send.js alice@nadmail.ai "Hello" "WAGMI!" --emo 0.1
  *
  * Security:
- *   --emo triggers a financial transaction. Confirmation is required unless --yes is passed.
+ *   --emo triggers a financial transaction. Interactive confirmation is ALWAYS required.
  *   Daily emo spending is tracked and capped (default: 0.5 MON/day).
  */
 
@@ -176,7 +176,7 @@ function parseEmoArg() {
 }
 
 async function main() {
-  const autoConfirm = hasFlag('--yes');
+  // --yes flag removed for security: financial transactions always require interactive confirmation
 
   // Filter out flags and their values from positional args
   const rawArgs = process.argv.slice(2);
@@ -186,7 +186,6 @@ async function main() {
       i++; // skip value
       continue;
     }
-    if (rawArgs[i] === '--yes') continue;
     positional.push(rawArgs[i]);
   }
 
@@ -195,17 +194,17 @@ async function main() {
 
   if (!to || !subject) {
     console.log('NadMail - Send Email\n');
-    console.log('Usage: node send.js <to> <subject> <body> [--emo <preset|amount>] [--yes]\n');
+    console.log('Usage: node send.js <to> <subject> <body> [--emo <preset|amount>]\n');
     console.log('Examples:');
     console.log('  node send.js alice@nadmail.ai "Hello" "How are you?"');
     console.log('  node send.js alice@nadmail.ai "Hello" "Great work!" --emo bullish');
-    console.log('  node send.js alice@nadmail.ai "Hello" "WAGMI!" --emo 0.1 --yes\n');
+    console.log('  node send.js alice@nadmail.ai "Hello" "WAGMI!" --emo 0.1\n');
     console.log('Emo-Buy Presets (extra MON to pump recipient\'s meme coin):');
     for (const [name, preset] of Object.entries(EMO_PRESETS)) {
       console.log(`  --emo ${name.padEnd(10)} ${preset.label} (total: ${(0.001 + preset.amount).toFixed(3)} MON)`);
     }
     console.log('\nFlags:');
-    console.log('  --yes          Skip confirmation prompt for emo-buy');
+    // --yes flag removed: confirmation always required for financial safety
     console.log(`\nDaily emo cap: ${EMO_DAILY_CAP} MON (set NADMAIL_EMO_DAILY_CAP to change)`);
     console.log('Note: Emo-buy only works for @nadmail.ai recipients.');
     console.log('External emails require credits (see: GET /api/credits).');
@@ -229,8 +228,8 @@ async function main() {
       process.exit(1);
     }
 
-    // Confirmation prompt (unless --yes)
-    if (!autoConfirm) {
+    // Confirmation prompt (always required for financial transactions)
+    {
       const presetEntry = Object.entries(EMO_PRESETS).find(([, p]) => p.amount === emoAmount);
       const label = presetEntry ? presetEntry[0] : 'custom';
       console.log(`\nEmo-Buy Confirmation:`);
