@@ -173,10 +173,42 @@ authRoutes.post('/agent-register', async (c) => {
 
           console.log(`[agent-register] Auto-buy success for existing account: ${handleForNad}.nad → ${wallet}`);
         } else {
-          nad_name_status = 'not_purchased';
-          purchase_hint = {
-            message: `${handleForNad}.nad is already taken on NNS by someone else.`,
-          };
+          // Name taken on NNS — check if platform wallet owns it (stuck transfer from previous auto_nad)
+          const { privateKeyToAccount: pka } = await import('viem/accounts');
+          const workerAddr = c.env.WALLET_PRIVATE_KEY
+            ? pka(c.env.WALLET_PRIVATE_KEY as `0x${string}`).address.toLowerCase()
+            : null;
+
+          // Check who owns it via getNadNamesForWallet on platform wallet
+          let platformOwnsIt = false;
+          if (workerAddr) {
+            const platformNames = await getNadNamesForWallet(workerAddr, rpcUrl).catch(() => [] as string[]);
+            platformOwnsIt = platformNames.some(n => n.toLowerCase() === handleForNad.toLowerCase());
+          }
+
+          if (platformOwnsIt) {
+            // Platform wallet has it — transfer to user
+            console.log(`[agent-register] ${handleForNad}.nad owned by platform wallet, transferring to ${wallet}`);
+            try {
+              const transferTx = await transferNadName(handleForNad, wallet, c.env);
+              nad_purchase_tx = transferTx;
+              nad_name_status = 'owned';
+              await c.env.DB.prepare('UPDATE accounts SET nad_name = ? WHERE wallet = ?')
+                .bind(`${handleForNad}.nad`, wallet).run();
+              console.log(`[agent-register] Transfer success: ${handleForNad}.nad → ${wallet}, tx: ${transferTx}`);
+            } catch (e: any) {
+              console.log(`[agent-register] Transfer from platform failed: ${e.message}`);
+              nad_name_status = 'not_purchased';
+              purchase_hint = {
+                message: `${handleForNad}.nad was purchased but transfer failed: ${e.message}. Please contact support.`,
+              };
+            }
+          } else {
+            nad_name_status = 'not_purchased';
+            purchase_hint = {
+              message: `${handleForNad}.nad is already taken on NNS by someone else.`,
+            };
+          }
         }
       } catch (e: any) {
         console.log(`[agent-register] Auto-buy failed for existing account ${handleForNad}: ${e.message}`);
