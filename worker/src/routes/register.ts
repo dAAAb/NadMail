@@ -514,6 +514,7 @@ registerRoutes.get('/check/:address', async (c) => {
     // Check all .nad names owned by this wallet (for handle switching)
     let owned_nad_names: string[] = [];
     let switch_available = false;
+    let nad_name_verified = false;
 
     try {
       const names = await getNadNamesForWallet(wallet, c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz');
@@ -522,6 +523,12 @@ registerRoutes.get('/check/:address', async (c) => {
       switch_available = /^0x/i.test(existing.handle)
         ? owned_nad_names.length > 0
         : owned_nad_names.length > 1 || (owned_nad_names.length === 1 && !owned_nad_names.includes(existing.handle));
+
+      // Phase 1: Verify nad_name on-chain
+      if (existing.nad_name) {
+        const nadBase = existing.nad_name.replace(/\.nad$/, '').toLowerCase();
+        nad_name_verified = owned_nad_names.includes(nadBase);
+      }
     } catch { /* non-critical */ }
 
     return c.json({
@@ -530,6 +537,7 @@ registerRoutes.get('/check/:address', async (c) => {
       email: `${existing.handle}@${c.env.DOMAIN}`,
       registered: true,
       nad_name: existing.nad_name,
+      nad_name_verified,
       token_address: existing.token_address,
       token_symbol: existing.token_symbol,
       upgrade_available: /^0x/i.test(existing.handle) && owned_nad_names.length > 0,

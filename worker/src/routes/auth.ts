@@ -4,6 +4,7 @@ import { generateNonce, verifySiwe, createToken, buildSiweMessage } from '../aut
 import { createToken as createNadFunToken, distributeInitialTokens } from '../nadfun';
 import { transferNadName } from '../nns-transfer';
 import { getNadNamesForWallet } from '../nns-lookup';
+import { executeNnsPurchase } from '../nns-purchase';
 
 const SIWE_ERROR_MESSAGES: Record<string, string> = {
   no_nonce_in_message: 'SIWE message is malformed — no nonce found. Use the exact message returned by POST /api/auth/start.',
@@ -37,11 +38,13 @@ authRoutes.post('/start', async (c) => {
  * Body: { address: "0x...", signature: "0x...", message: "...", handle?: "alice" }
  */
 authRoutes.post('/agent-register', async (c) => {
-  const { address, signature, message, handle: requestedHandle } = await c.req.json<{
+  const { address, signature, message, handle: requestedHandle, auto_nad, nad_name: requestedNadName } = await c.req.json<{
     address: string;
     signature: string;
     message: string;
     handle?: string;
+    auto_nad?: boolean;
+    nad_name?: string;
   }>();
 
   if (!address || !signature || !message) {
@@ -104,6 +107,10 @@ authRoutes.post('/agent-register', async (c) => {
     }
 
     const token = await createToken({ wallet, handle: existingAccount.handle }, secret);
+
+    // Phase 3: If user has 0x handle AND owns exactly one .nad name, offer auto_upgrade
+    const auto_upgrade_available = upgrade_available && /^0x/i.test(existingAccount.handle) && owned_nad_names.length === 1;
+
     return c.json({
       token,
       email: `${existingAccount.handle}@${c.env.DOMAIN}`,
@@ -115,9 +122,12 @@ authRoutes.post('/agent-register', async (c) => {
       registered: true,
       new_account: false,
       upgrade_available,
+      auto_upgrade_available,
       owned_nad_names: upgrade_available ? owned_nad_names : undefined,
       upgrade_hint: upgrade_available
-        ? `You own .nad names! Call POST /api/register/upgrade-handle { "new_handle": "${owned_nad_names[0]}" } to upgrade.`
+        ? auto_upgrade_available
+          ? `You own ${owned_nad_names[0]}.nad! Call POST /api/register/upgrade-handle { "new_handle": "${owned_nad_names[0]}", "auto_upgrade": true } to upgrade your email from ${existingAccount.handle}@${c.env.DOMAIN} to ${owned_nad_names[0]}@${c.env.DOMAIN}.`
+          : `You own .nad names! Call POST /api/register/upgrade-handle { "new_handle": "${owned_nad_names[0]}" } to upgrade.`
         : undefined,
     });
   }
@@ -127,11 +137,17 @@ authRoutes.post('/agent-register', async (c) => {
   let nadName: string | null = null;
   let nftTransferTx: string | null = null;
   let detectedNadNames: string[] = [];
+  let nadNameStatus: 'owned' | 'not_purchased' | 'reserved' | null = null;
+  let purchaseHint: object | undefined = undefined;
+  let autoBuyTx: string | null = null;
 
   let claimFreeName = false;
 
-  if (requestedHandle) {
-    handle = requestedHandle.toLowerCase().trim();
+  // Resolve handle from auto_nad nad_name param or requestedHandle
+  const effectiveHandle = requestedHandle || (auto_nad && requestedNadName ? requestedNadName.toLowerCase().trim().replace(/\.nad$/, '') : undefined);
+
+  if (effectiveHandle) {
+    handle = effectiveHandle.toLowerCase().trim();
     if (!isValidHandle(handle)) {
       return c.json({ error: 'Invalid handle format (3-20 chars, a-z, 0-9, _ only)' }, 400);
     }
@@ -146,9 +162,9 @@ authRoutes.post('/agent-register', async (c) => {
         return c.json({ error: 'This name has already been claimed' }, 409);
       }
       claimFreeName = true;
+      nadNameStatus = 'owned'; // Will be owned after free pool claim + transfer
     } else {
-      // Not in free pool — check if this .nad name exists on NNS
-      // If it does, only the NFT owner can claim this handle on NadMail
+      // Not in free pool — check NNS on-chain status
       const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
       try {
         const { createPublicClient, http } = await import('viem');
@@ -171,17 +187,100 @@ authRoutes.post('/agent-register', async (c) => {
             return c.json({
               error: `${handle}.nad is owned by someone else on NNS. This handle is reserved for the .nad NFT holder.`,
               code: 'reserved_for_nns_owner',
+              nad_name_status: 'reserved',
               hint: `If you own ${handle}.nad, make sure you're using the correct wallet. Otherwise, try a different handle or register with your wallet address.`,
             }, 403);
           }
+          // Wallet owns this .nad NFT
+          nadNameStatus = 'owned';
+          nadName = `${handle}.nad`;
+        } else {
+          // Name is available on NNS — check if wallet already owns it (shouldn't, but be safe)
+          const ownedNames = await getNadNamesForWallet(wallet, rpcUrl);
+          const ownsIt = ownedNames.some(n => n.toLowerCase() === handle);
+
+          if (ownsIt) {
+            nadNameStatus = 'owned';
+            nadName = `${handle}.nad`;
+          } else if (auto_nad) {
+            // Phase 2: Auto-buy .nad name
+            try {
+              // Query price
+              const priceResult = await client.readContract({
+                address: '0xdF0e18bb6d8c5385d285C3c67919E99c0dce020d' as `0x${string}`,
+                abi: [{ inputs: [{ name: 'name', type: 'string' }, { name: 'token', type: 'address' }], name: 'getRegisteringPriceInToken', outputs: [{ components: [{ name: 'base', type: 'uint256' }, { name: 'token', type: 'address' }, { name: 'decimals', type: 'uint8' }], type: 'tuple' }], stateMutability: 'view', type: 'function' }] as const,
+                functionName: 'getRegisteringPriceInToken',
+                args: [handle, '0x0000000000000000000000000000000000000000' as `0x${string}`],
+              });
+
+              const priceWei = (priceResult as any).base as bigint;
+              console.log(`[agent-register] Auto-buying ${handle}.nad for ${wallet}, price: ${priceWei} wei`);
+
+              // Execute purchase (Worker buys then transfers to user)
+              const purchaseResult = await executeNnsPurchase(handle, wallet, priceWei, c.env);
+              autoBuyTx = purchaseResult.txHash;
+              nadNameStatus = 'owned';
+              nadName = `${handle}.nad`;
+              console.log(`[agent-register] Auto-buy success: ${handle}.nad → ${wallet}, tx: ${autoBuyTx}`);
+            } catch (e: any) {
+              console.log(`[agent-register] Auto-buy failed for ${handle}: ${e.message}`);
+              // Fall through — register with handle but nadName = null
+              nadNameStatus = 'not_purchased';
+              nadName = null;
+              purchaseHint = {
+                message: `Auto-buy failed: ${e.message}. You can purchase ${handle}.nad manually.`,
+                options: [
+                  {
+                    action: 'proxy_buy',
+                    method: 'POST /api/register/buy-nad-name',
+                    description: 'We buy it for you (send MON to cover cost)',
+                  },
+                  {
+                    action: 'buy_direct',
+                    url: 'https://app.nad.domains/',
+                    description: 'Buy directly on NNS, then call POST /api/register/upgrade-handle',
+                  },
+                ],
+              };
+            }
+          } else {
+            // Phase 1: Name available but not purchased — honest status
+            nadNameStatus = 'not_purchased';
+            nadName = null;
+            purchaseHint = {
+              message: `Your handle is reserved! Purchase ${handle}.nad to own it on-chain.`,
+              options: [
+                {
+                  action: 'auto_nad',
+                  method: 'POST /api/auth/agent-register',
+                  body: { handle, auto_nad: true },
+                  description: 'Re-register with auto_nad: true to auto-purchase (platform pays)',
+                },
+                {
+                  action: 'proxy_buy',
+                  method: 'POST /api/register/buy-nad-name',
+                  description: 'We buy it for you (send MON to cover cost)',
+                },
+                {
+                  action: 'buy_direct',
+                  url: 'https://app.nad.domains/',
+                  description: 'Buy directly on NNS, then call POST /api/register/upgrade-handle',
+                },
+              ],
+            };
+          }
         }
       } catch (e: any) {
-        // Non-critical: if NNS check fails, allow registration to continue
+        // Non-critical: if NNS check fails, allow registration but with honest status
         console.log(`[agent-register] NNS availability check failed for ${handle}: ${e.message}`);
+        nadNameStatus = null;
       }
     }
 
-    nadName = `${handle}.nad`;
+    // Only set nadName if not already set (owned or free pool)
+    if (claimFreeName) {
+      nadName = `${handle}.nad`;
+    }
   } else {
     // Before falling back to 0x, detect owned .nad names for guidance
     const rpcUrl = c.env.MONAD_RPC_URL || 'https://rpc.monad.xyz';
@@ -279,6 +378,9 @@ authRoutes.post('/agent-register', async (c) => {
     handle,
     wallet,
     nad_name: nadName,
+    nad_name_status: nadNameStatus,
+    purchase_hint: purchaseHint,
+    auto_buy_tx: autoBuyTx,
     nft_transfer_tx: nftTransferTx,
     token_address: tokenAddress,
     token_symbol: tokenSymbol,
